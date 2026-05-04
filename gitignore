@@ -1,0 +1,23 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+env/
+
+# Local-only files that shouldn't be in git
+alerts.jsonl
+debug_api.py
+.env
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+
+# Note: monitor_state.db IS tracked on purpose -- the workflow commits it
+# so that hourly runs persist their dedup state.
