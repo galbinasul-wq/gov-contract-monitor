@@ -20,8 +20,9 @@ from config import CONFIG
 from watchlist import WATCHLIST
 from usaspending import fetch_recent_contracts, fetch_transactions_for_award, chunked
 from market_data import get_market_cap, cap_band
-from state import is_seen, mark_seen
+from state import is_seen, mark_seen, record_alert, record_scan
 import alerts as alerts_mod
+from alerts import classify_tier
 
 
 # ---------- Watchlist matching ----------
@@ -122,6 +123,7 @@ def evaluate_award(award: Dict[str, Any], days_back: int) -> List[Dict[str, Any]
             continue
 
         ratio = tx_amount / market_cap
+        tier_name, tier_emoji = classify_tier(ratio)
         alerts_out.append({
             "ticker": company["ticker"],
             "company": company["name"],
@@ -131,6 +133,8 @@ def evaluate_award(award: Dict[str, Any], days_back: int) -> List[Dict[str, Any]
             "market_cap": market_cap,
             "cap_band": band,
             "ratio_pct": ratio * 100,
+            "tier": tier_name,
+            "tier_emoji": tier_emoji,
             "agency": award.get("Awarding Agency") or "",
             "sub_agency": award.get("Awarding Sub Agency") or "",
             "description": tx.get("description") or award.get("Description") or "",
@@ -195,8 +199,10 @@ def run_once() -> None:
             if is_seen(key):
                 continue
             alerts_mod.dispatch(alert)
+            record_alert(alert)
             mark_seen(key)
             fired += 1
+    record_scan(scanned, fired)
     print(f"  -> scanned {scanned} candidate awards, fired {fired} alerts")
 
 
