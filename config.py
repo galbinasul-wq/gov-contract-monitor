@@ -11,7 +11,7 @@ class Config:
 
     # --- Alert thresholds ---
     min_contract_value: float = 1_000_000    # ignore awards smaller than $1M
-    material_ratio_threshold: float = 0.03   # alert if contract >= 3% of market cap
+    material_ratio_threshold: float = 0.02   # alert if contract >= 2% of market cap
 
     # Cap bands to alert on (anything outside this is filtered out)
     target_cap_bands: tuple = ("micro", "small", "mid")
