@@ -1,11 +1,15 @@
-"""SQLite-backed tracking of awards we've already processed.
+"""SQLite-backed state for the monitor.
 
-Prevents re-alerting on the same contract across runs.
+Three tables:
+- seen_awards    : dedup keys so we don't re-alert on the same transaction
+- alert_history  : every alert we've ever fired (used by the daily summary)
+- scan_log       : a record of each scan run (used by the daily summary)
 """
 from __future__ import annotations
 
 import sqlite3
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
+from typing import List, Dict, Any
 
 from config import CONFIG
 
@@ -18,8 +22,36 @@ def _conn() -> sqlite3.Connection:
             seen_at  TEXT NOT NULL
         )
     """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS alert_history (
+            transaction_id      TEXT PRIMARY KEY,
+            fired_at            TEXT NOT NULL,
+            ticker              TEXT,
+            company             TEXT,
+            tier                TEXT,
+            modification_amount REAL,
+            total_award_amount  REAL,
+            market_cap          REAL,
+            cap_band            TEXT,
+            ratio_pct           REAL,
+            agency              TEXT,
+            description         TEXT,
+            action_date         TEXT,
+            award_id            TEXT,
+            recipient_name      TEXT
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS scan_log (
+            scan_at            TEXT PRIMARY KEY,
+            candidates_scanned INTEGER NOT NULL,
+            alerts_fired       INTEGER NOT NULL
+        )
+    """)
     return conn
 
+
+# ---------- dedup ----------
 
 def is_seen(award_id: str) -> bool:
     with _conn() as c:
@@ -33,3 +65,68 @@ def mark_seen(award_id: str) -> None:
             "INSERT OR IGNORE INTO seen_awards (award_id, seen_at) VALUES (?, ?)",
             (award_id, datetime.now(timezone.utc).isoformat()),
         )
+
+
+# ---------- alert history ----------
+
+def record_alert(alert: Dict[str, Any]) -> None:
+    """Append an alert to the history table (idempotent on transaction_id)."""
+    with _conn() as c:
+        c.execute(
+            """
+            INSERT OR REPLACE INTO alert_history (
+                transaction_id, fired_at, ticker, company, tier,
+                modification_amount, total_award_amount, market_cap, cap_band,
+                ratio_pct, agency, description, action_date, award_id, recipient_name
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                alert.get("transaction_id") or alert.get("award_id"),
+                datetime.now(timezone.utc).isoformat(),
+                alert.get("ticker"),
+                alert.get("company"),
+                alert.get("tier"),
+                alert.get("modification_amount"),
+                alert.get("total_award_amount"),
+                alert.get("market_cap"),
+                alert.get("cap_band"),
+                alert.get("ratio_pct"),
+                alert.get("agency"),
+                (alert.get("description") or "")[:500],
+                alert.get("action_date"),
+                alert.get("award_id"),
+                alert.get("recipient_name"),
+            ),
+        )
+
+
+def recent_alerts(hours: int = 24) -> List[Dict[str, Any]]:
+    cutoff = (datetime.now(timezone.utc) - timedelta(hours=hours)).isoformat()
+    with _conn() as c:
+        c.row_factory = sqlite3.Row
+        cur = c.execute(
+            "SELECT * FROM alert_history WHERE fired_at >= ? ORDER BY ratio_pct DESC",
+            (cutoff,),
+        )
+        return [dict(r) for r in cur.fetchall()]
+
+
+# ---------- scan log ----------
+
+def record_scan(candidates: int, alerts: int) -> None:
+    with _conn() as c:
+        c.execute(
+            "INSERT OR REPLACE INTO scan_log (scan_at, candidates_scanned, alerts_fired) VALUES (?, ?, ?)",
+            (datetime.now(timezone.utc).isoformat(), candidates, alerts),
+        )
+
+
+def recent_scans(hours: int = 24) -> List[Dict[str, Any]]:
+    cutoff = (datetime.now(timezone.utc) - timedelta(hours=hours)).isoformat()
+    with _conn() as c:
+        c.row_factory = sqlite3.Row
+        cur = c.execute(
+            "SELECT * FROM scan_log WHERE scan_at >= ? ORDER BY scan_at DESC",
+            (cutoff,),
+        )
+        return [dict(r) for r in cur.fetchall()]
