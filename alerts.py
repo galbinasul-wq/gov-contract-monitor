@@ -1,5 +1,9 @@
-"""Alert sinks. All alerts are always written to console + JSONL log.
-Discord, Slack, and Email each fire only if their env vars are configured.
+"""Alert sinks with 3-tier classification.
+
+Tiers (based on modification / market_cap):
+  Regular     : 1%   -- 3%   --> 🟢
+  Important   : 3%   -- 4.5% --> 🟡
+  Big Impact  : 4.5%+         --> 🔴
 """
 from __future__ import annotations
 
@@ -7,19 +11,35 @@ import json
 import smtplib
 from email.message import EmailMessage
 from datetime import datetime, timezone
+from typing import Tuple
 
 import requests
 
 from config import CONFIG
 
 
+# ---------- tier classification ----------
+
+def classify_tier(ratio: float) -> Tuple[str, str]:
+    """Return (tier_name, emoji) for a given materiality ratio (0.05 == 5%)."""
+    if ratio >= CONFIG.tier_big_impact_threshold:
+        return ("Big Impact", "🔴")
+    if ratio >= CONFIG.tier_important_threshold:
+        return ("Important", "🟡")
+    return ("Regular", "🟢")
+
+
+# ---------- formatting ----------
+
 def _award_url(award_id: str) -> str:
     return f"https://www.usaspending.gov/award/{award_id}"
 
 
 def format_message(alert: dict) -> str:
+    tier = alert.get("tier") or "Regular"
+    emoji = alert.get("tier_emoji") or "🟢"
     return (
-        f"GOV CONTRACT ALERT  [{alert['ticker']}]  {alert['company']}\n"
+        f"{emoji} {tier.upper()} CONTRACT  [{alert['ticker']}]  {alert['company']}\n"
         f"  Recipient on file:  {alert['recipient_name']}\n"
         f"  Modification date:  {alert['action_date']}   "
             f"(mod #{alert.get('modification_number') or '-'}, "
@@ -29,13 +49,15 @@ def format_message(alert: dict) -> str:
         f"  Total award value:  ${alert['total_award_amount']:>15,.0f}   "
             f"(cumulative across all mods)\n"
         f"  Market cap:         ${alert['market_cap']:>15,.0f}   ({alert['cap_band']}-cap)\n"
-        f"  Material ratio:     {alert['ratio_pct']:.2f}% of market cap (this modification)\n"
+        f"  Material ratio:     {alert['ratio_pct']:.2f}% of market cap  [{tier} tier]\n"
         f"  Awarding agency:    {alert['agency']}  /  {alert['sub_agency']}\n"
         f"  Period of perf:     {alert['start_date']} -> {alert['end_date']}\n"
         f"  Description:        {(alert['description'] or '')[:240]}\n"
         f"  Award URL:          {_award_url(alert['award_id'])}"
     )
 
+
+# ---------- sinks ----------
 
 def send_console(alert: dict) -> None:
     bar = "=" * 78
@@ -71,19 +93,14 @@ def send_slack(alert: dict) -> None:
 
 
 def send_email(alert: dict) -> None:
-    """Send alert via SMTP (Gmail by default).
-
-    Requires EMAIL_USERNAME, EMAIL_PASSWORD, and EMAIL_TO env vars to be set.
-    For Gmail: EMAIL_PASSWORD must be a 16-character App Password generated at
-    https://myaccount.google.com/apppasswords (NOT your regular Google password).
-    2-Step Verification must be enabled on your Google account first.
-    """
     if not (CONFIG.email_username and CONFIG.email_password and CONFIG.email_to):
         return
     try:
+        tier = alert.get("tier") or "Regular"
+        emoji = alert.get("tier_emoji") or "🟢"
         msg = EmailMessage()
         msg["Subject"] = (
-            f"[{alert['ticker']}] Gov contract -- "
+            f"{emoji} [{tier}] [{alert['ticker']}] "
             f"${alert['modification_amount']:,.0f} new "
             f"({alert['ratio_pct']:.1f}% of market cap)"
         )
@@ -112,3 +129,24 @@ def dispatch(alert: dict) -> None:
     send_discord(alert)
     send_slack(alert)
     send_email(alert)
+
+
+# ---------- daily summary email (separate from per-alert dispatch) ----------
+
+def send_summary_email(subject: str, body: str) -> None:
+    if not (CONFIG.email_username and CONFIG.email_password and CONFIG.email_to):
+        print("[alerts] Email not configured; skipping summary.")
+        return
+    try:
+        msg = EmailMessage()
+        msg["Subject"] = subject
+        msg["From"] = CONFIG.email_from or CONFIG.email_username
+        msg["To"] = CONFIG.email_to
+        msg.set_content(body)
+        with smtplib.SMTP(CONFIG.email_smtp_host, CONFIG.email_smtp_port, timeout=20) as s:
+            s.starttls()
+            s.login(CONFIG.email_username, CONFIG.email_password)
+            s.send_message(msg)
+        print("[alerts] Daily summary sent.")
+    except Exception as e:
+        print(f"[alerts] Summary send failed: {e}")
