@@ -11,7 +11,12 @@ class Config:
 
     # --- Alert thresholds ---
     min_contract_value: float = 1_000_000    # ignore awards smaller than $1M
-    material_ratio_threshold: float = 0.02   # alert if contract >= 2% of market cap
+
+    # 1% is the minimum to fire any alert at all (the "Regular" tier floor).
+    # 3% promotes to "Important". 4.5%+ promotes to "Big Impact".
+    material_ratio_threshold: float       = 0.01   # 1% --> Regular tier
+    tier_important_threshold: float       = 0.03   # 3% --> Important tier
+    tier_big_impact_threshold: float      = 0.045  # 4.5%+ --> Big Impact tier
 
     # Cap bands to alert on (anything outside this is filtered out)
     target_cap_bands: tuple = ("micro", "small", "mid")
