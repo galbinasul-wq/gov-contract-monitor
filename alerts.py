@@ -158,17 +158,22 @@ def _format_sec_message(alert: dict) -> str:
     badge = ("📜 MATERIAL AGREEMENT (Item 1.01)"
              if alert.get("is_material_agreement")
              else "📰 8-K DISCLOSURE")
+    conf = alert.get("confidence", "Medium")
+    conf_emoji = {"High": "🟢", "Medium": "🟡", "Low": "⚪"}.get(conf, "🟡")
     hyperscalers = alert.get("hyperscalers") or []
     hyper_str = ", ".join(hyperscalers) if hyperscalers else "(none detected)"
     max_amount = alert.get("max_amount") or 0
-    amt_str = f"${max_amount:,.0f}" if max_amount else "(no amount detected in text)"
+    amt_str = f"${max_amount:,.0f}" if max_amount else "(no contract-context amount found)"
     return (
         f"SEC 8-K ALERT  {badge}\n"
         f"  Company:            [{alert['ticker']}]  {alert['company']}\n"
+        f"  Confidence:         {conf_emoji} {conf}\n"
+        f"  Looks like:         {alert.get('agreement_type') or '(unspecified agreement)'}\n"
+        f"  Why flagged:        {alert.get('reason','')}\n"
         f"  Filed:              {alert.get('filing_date','')}   "
             f"(items: {alert.get('items','')})\n"
         f"  Buyers detected:    {hyper_str}\n"
-        f"  Largest $ in text:  {amt_str}\n"
+        f"  Contract $ (approx):{amt_str}\n"
         f"  Filing URL:         {alert.get('filing_url','')}\n"
         f"  Excerpt:            {(alert.get('snippet') or '')[:420]}"
     )
@@ -194,6 +199,7 @@ def send_sec_email(alert: dict) -> None:
         prefix = ("📜 [Material Agreement]"
                   if alert.get("is_material_agreement")
                   else "📰 [SEC 8-K]")
+        conf = alert.get("confidence", "Medium")
         hyperscalers = alert.get("hyperscalers") or []
         hyper_str = f" w/ {'/'.join(hyperscalers)}" if hyperscalers else ""
         max_amount = alert.get("max_amount") or 0
@@ -202,7 +208,8 @@ def send_sec_email(alert: dict) -> None:
 
         msg = EmailMessage()
         msg["Subject"] = (
-            f"{prefix} [{alert['ticker']}] {alert['company']}{hyper_str}{amt_str}"
+            f"{prefix} [{conf}] [{alert['ticker']}] "
+            f"{alert['company']}{hyper_str}{amt_str}"
         )
         msg["From"] = CONFIG.email_from or CONFIG.email_username
         msg["To"] = CONFIG.email_to
