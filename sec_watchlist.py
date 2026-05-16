@@ -40,7 +40,7 @@ WATCHLIST = [
     {"ticker": "DELL", "name": "Dell Technologies"},
     {"ticker": "HPE",  "name": "Hewlett Packard Enterprise"},
     {"ticker": "NTAP", "name": "NetApp"},
-    {"ticker": "PSTG", "name": "Pure Storage"},
+    {"ticker": "PSTG", "name": "Pure Storage", "cik": "1474432"},
 
     # ============ AI CHIPS / SEMICONDUCTORS ============
     {"ticker": "NVDA", "name": "Nvidia"},
