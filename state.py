@@ -48,6 +48,34 @@ def _conn() -> sqlite3.Connection:
             alerts_fired       INTEGER NOT NULL
         )
     """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS sec_seen_filings (
+            accession_number TEXT PRIMARY KEY,
+            seen_at          TEXT NOT NULL
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS sec_alert_history (
+            accession_number      TEXT PRIMARY KEY,
+            fired_at              TEXT NOT NULL,
+            ticker                TEXT,
+            company               TEXT,
+            filing_date           TEXT,
+            items                 TEXT,
+            is_material_agreement INTEGER,
+            hyperscalers          TEXT,
+            max_amount            REAL,
+            filing_url            TEXT,
+            snippet               TEXT
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS sec_scan_log (
+            scan_at         TEXT PRIMARY KEY,
+            filings_scanned INTEGER NOT NULL,
+            alerts_fired    INTEGER NOT NULL
+        )
+    """)
     return conn
 
 
@@ -127,6 +155,84 @@ def recent_scans(hours: int = 24) -> List[Dict[str, Any]]:
         c.row_factory = sqlite3.Row
         cur = c.execute(
             "SELECT * FROM scan_log WHERE scan_at >= ? ORDER BY scan_at DESC",
+            (cutoff,),
+        )
+        return [dict(r) for r in cur.fetchall()]
+
+
+# ---------- SEC: dedup ----------
+
+def is_seen_sec_filing(accession: str) -> bool:
+    with _conn() as c:
+        cur = c.execute(
+            "SELECT 1 FROM sec_seen_filings WHERE accession_number = ?", (accession,)
+        )
+        return cur.fetchone() is not None
+
+
+def mark_seen_sec_filing(accession: str) -> None:
+    with _conn() as c:
+        c.execute(
+            "INSERT OR IGNORE INTO sec_seen_filings (accession_number, seen_at) VALUES (?, ?)",
+            (accession, datetime.now(timezone.utc).isoformat()),
+        )
+
+
+# ---------- SEC: alert history ----------
+
+def record_sec_alert(alert: Dict[str, Any]) -> None:
+    with _conn() as c:
+        c.execute(
+            """
+            INSERT OR REPLACE INTO sec_alert_history (
+                accession_number, fired_at, ticker, company, filing_date,
+                items, is_material_agreement, hyperscalers, max_amount,
+                filing_url, snippet
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                alert.get("accession_number"),
+                datetime.now(timezone.utc).isoformat(),
+                alert.get("ticker"),
+                alert.get("company"),
+                alert.get("filing_date"),
+                alert.get("items"),
+                1 if alert.get("is_material_agreement") else 0,
+                ",".join(alert.get("hyperscalers", [])),
+                alert.get("max_amount") or 0,
+                alert.get("filing_url"),
+                (alert.get("snippet") or "")[:1000],
+            ),
+        )
+
+
+def recent_sec_alerts(hours: int = 24) -> List[Dict[str, Any]]:
+    cutoff = (datetime.now(timezone.utc) - timedelta(hours=hours)).isoformat()
+    with _conn() as c:
+        c.row_factory = sqlite3.Row
+        cur = c.execute(
+            "SELECT * FROM sec_alert_history WHERE fired_at >= ? ORDER BY filing_date DESC",
+            (cutoff,),
+        )
+        return [dict(r) for r in cur.fetchall()]
+
+
+# ---------- SEC: scan log ----------
+
+def record_sec_scan(filings: int, alerts: int) -> None:
+    with _conn() as c:
+        c.execute(
+            "INSERT OR REPLACE INTO sec_scan_log (scan_at, filings_scanned, alerts_fired) VALUES (?, ?, ?)",
+            (datetime.now(timezone.utc).isoformat(), filings, alerts),
+        )
+
+
+def recent_sec_scans(hours: int = 24) -> List[Dict[str, Any]]:
+    cutoff = (datetime.now(timezone.utc) - timedelta(hours=hours)).isoformat()
+    with _conn() as c:
+        c.row_factory = sqlite3.Row
+        cur = c.execute(
+            "SELECT * FROM sec_scan_log WHERE scan_at >= ? ORDER BY scan_at DESC",
             (cutoff,),
         )
         return [dict(r) for r in cur.fetchall()]
