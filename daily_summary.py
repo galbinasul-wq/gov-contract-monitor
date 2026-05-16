@@ -12,7 +12,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import List, Dict
 
-from state import recent_alerts, recent_scans
+from state import recent_alerts, recent_scans, recent_sec_alerts, recent_sec_scans
 from alerts import send_summary_email
 
 
@@ -55,7 +55,7 @@ def build_summary(hours: int = 24) -> tuple[str, str]:
     lines.append("")
 
     if not alerts:
-        lines.append("No alerts in this window.")
+        lines.append("No gov-contract alerts in this window.")
         lines.append("")
         lines.append("This is normal during quiet weeks (holidays, end-of-month lulls).")
         lines.append("The system is running -- you'll get individual alerts whenever a")
@@ -82,6 +82,38 @@ def build_summary(hours: int = 24) -> tuple[str, str]:
                 lines.append(f"      Desc:   {desc}")
                 lines.append(f"      Award:  https://www.usaspending.gov/award/{a.get('award_id','')}")
                 lines.append("")
+
+    # ---- SEC 8-K section ----
+    sec_alerts = recent_sec_alerts(hours=hours)
+    sec_scans = recent_sec_scans(hours=hours)
+    sec_scan_count = len(sec_scans)
+    sec_filings_seen = sum(int(s.get("filings_scanned") or 0) for s in sec_scans)
+
+    lines.append("")
+    lines.append("=" * 78)
+    lines.append("SEC 8-K MONITOR (AI infrastructure contract signals)")
+    lines.append("=" * 78)
+    lines.append(f"SEC scans run in last {hours}h:  {sec_scan_count}")
+    lines.append(f"New 8-K filings inspected:     {sec_filings_seen}")
+    lines.append(f"SEC alerts fired:              {len(sec_alerts)}")
+    lines.append("")
+    if not sec_alerts:
+        lines.append("No SEC 8-K alerts in this window.")
+    else:
+        for a in sec_alerts:
+            material = "📜 Material Agreement" if a.get("is_material_agreement") else "📰 Disclosure"
+            hyper = a.get("hyperscalers") or ""
+            amt = float(a.get("max_amount") or 0)
+            amt_str = f"  ~${amt:,.0f}" if amt else ""
+            lines.append("-" * 78)
+            lines.append(f"  {material}  [{a.get('ticker','?')}] {a.get('company','?')}{amt_str}")
+            lines.append(f"      Filed:  {a.get('filing_date','')}  (items {a.get('items','')})")
+            if hyper:
+                lines.append(f"      Buyers: {hyper}")
+            snip = (a.get("snippet") or "")[:160]
+            lines.append(f"      Excerpt: {snip}")
+            lines.append(f"      Filing:  {a.get('filing_url','')}")
+            lines.append("")
 
     body = "\n".join(lines)
     return subject, body
