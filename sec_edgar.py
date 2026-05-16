@@ -142,8 +142,167 @@ _DOLLAR_RE = re.compile(
 )
 
 
+# --- Classification lexicons ---------------------------------------------
+
+# Financing / M&A / corporate housekeeping. If the agreement is one of these,
+# it is NOT a customer contract win, no matter how big the dollar figure.
+NEGATIVE_TERMS = [
+    "credit agreement", "term loan", "revolving credit", "revolving facility",
+    "senior notes", "senior secured notes", "indenture", "promissory note",
+    "note purchase agreement", "notes offering", "convertible notes",
+    "stock purchase agreement", "share purchase agreement",
+    "agreement and plan of merger", "merger agreement", "asset purchase agreement",
+    "equity distribution agreement", "underwriting agreement", "sales agreement",
+    "at-the-market", "at the market offering", "atm program",
+    "registration rights agreement", "securities purchase agreement",
+    "lease agreement", "sublease", "ground lease", "lease amendment",
+    "settlement agreement", "separation agreement", "employment agreement",
+    "severance", "retention agreement", "transition services agreement",
+    "amendment to the credit", "forbearance", "loan and security agreement",
+    "guaranty agreement", "pledge agreement", "deposit agreement",
+    "exchange agreement", "tax receivable agreement", "warrant agreement",
+    "rights agreement", "standby equity", "purchase and sale agreement",
+]
+
+# Strong customer / supply / production contract signals.
+STRONG_POSITIVE_TERMS = [
+    "supply agreement", "master supply agreement", "master purchase agreement",
+    "purchase order", "blanket purchase order", "master services agreement",
+    "manufacturing agreement", "production agreement", "framework agreement",
+    "capacity reservation", "capacity agreement", "tolling agreement",
+    "offtake agreement", "procurement agreement", "preferred supplier",
+    "selected as a supplier", "selected as supplier", "awarded a contract",
+    "definitive supply", "long-term supply", "long term supply",
+    "power purchase agreement", "energy supply agreement",
+    "wafer supply agreement", "strategic supply",
+]
+
+# Weak supporting signals -- helpful only alongside a strong signal or buyer.
+WEAK_POSITIVE_TERMS = [
+    "data center", "data centre", "hyperscale", "cloud capacity",
+    "compute capacity", "gpu", "accelerator", "multi-year agreement",
+    "multiyear agreement", "strategic agreement", "commercial agreement",
+    "collaboration agreement",
+]
+
+_ENTERED_INTO_RE = re.compile(
+    r"enter(?:ed)?\s+into\s+(?:a|an|the|that\s+certain)?\s*"
+    r"([^.;,]{0,90}?\b(?:agreement|order|arrangement|contract))",
+    re.IGNORECASE,
+)
+
+
+def _agreement_type(text: str) -> str:
+    m = _ENTERED_INTO_RE.search(text)
+    return (m.group(1).strip() if m else "")[:120]
+
+
+def classify_filing(text: str, hyperscalers: list) -> Dict[str, Any]:
+    """Decide whether a filing is a real customer/supply contract win.
+
+    Returns dict with: is_contract (bool), confidence ('High'/'Medium'/'Low'),
+    agreement_type (str), reason (str).
+    """
+    low = text.lower()
+    agreement_type = _agreement_type(text)
+    at_low = agreement_type.lower()
+
+    neg_in_type = [t for t in NEGATIVE_TERMS if t in at_low]
+    neg_in_doc = [t for t in NEGATIVE_TERMS if t in low]
+    strong = [t for t in STRONG_POSITIVE_TERMS if t in low]
+    weak = [t for t in WEAK_POSITIVE_TERMS if t in low]
+    strong_in_type = [t for t in STRONG_POSITIVE_TERMS if t in at_low]
+
+    has_buyer = bool(hyperscalers)
+
+    # 1. If the *named agreement type* is a financing/M&A type, veto outright.
+    if neg_in_type and not strong_in_type:
+        return {
+            "is_contract": False,
+            "confidence": "Low",
+            "agreement_type": agreement_type,
+            "reason": f"Agreement type looks like financing/M&A: '{agreement_type}'",
+        }
+
+    # 2. Need at least one strong positive OR a named hyperscaler buyer.
+    if not strong and not has_buyer:
+        return {
+            "is_contract": False,
+            "confidence": "Low",
+            "agreement_type": agreement_type,
+            "reason": "No supply/contract language and no named buyer detected",
+        }
+
+    # 3. Negative language dominates and nothing strong/buyer -> skip.
+    if len(neg_in_doc) >= 2 and not strong and not has_buyer:
+        return {
+            "is_contract": False,
+            "confidence": "Low",
+            "agreement_type": agreement_type,
+            "reason": "Financing/M&A language dominates the filing",
+        }
+
+    # Passed the gate -> rate confidence.
+    if strong and has_buyer:
+        conf = "High"
+        reason = f"Strong contract language ({strong[0]}) + named buyer ({', '.join(hyperscalers)})"
+    elif strong:
+        conf = "Medium"
+        reason = f"Strong contract language detected: {strong[0]}"
+    else:  # only has_buyer
+        conf = "Medium"
+        reason = f"Named buyer detected ({', '.join(hyperscalers)}) without explicit supply-agreement phrasing"
+
+    return {
+        "is_contract": True,
+        "confidence": conf,
+        "agreement_type": agreement_type,
+        "reason": reason,
+        "strong_terms": strong,
+        "weak_terms": weak,
+    }
+
+
+def _contextual_dollar_amounts(text: str) -> List[float]:
+    """Return dollar amounts that appear near contract language, not the
+    largest number anywhere (which is usually a credit facility / share count).
+    """
+    anchors = STRONG_POSITIVE_TERMS + WEAK_POSITIVE_TERMS
+    low = text.lower()
+    anchor_positions = []
+    for term in anchors:
+        start = 0
+        while True:
+            idx = low.find(term, start)
+            if idx == -1:
+                break
+            anchor_positions.append(idx)
+            start = idx + len(term)
+    if not anchor_positions:
+        return []
+
+    amounts: List[float] = []
+    for m in _DOLLAR_RE.finditer(text):
+        pos = m.start()
+        if any(abs(pos - a) <= 400 for a in anchor_positions):
+            try:
+                val = float(m.group(1).replace(",", ""))
+            except ValueError:
+                continue
+            mag = (m.group(2) or "").lower()
+            if mag == "billion":
+                val *= 1_000_000_000
+            elif mag == "million":
+                val *= 1_000_000
+            elif mag == "thousand":
+                val *= 1_000
+            if val >= 100_000:
+                amounts.append(val)
+    return amounts
+
+
 def parse_filing_for_signals(html_text: str) -> Dict[str, Any]:
-    """Extract hyperscaler mentions, dollar amounts, and a context snippet."""
+    """Extract buyers, classify the filing, and pull contextual dollar amounts."""
     text = _strip_html(html_text)
     text_upper = text.upper()
 
@@ -151,39 +310,30 @@ def parse_filing_for_signals(html_text: str) -> Dict[str, Any]:
     for name, terms in HYPERSCALERS.items():
         if any(t in text_upper for t in terms):
             found.append(name)
+    hyperscalers = sorted(set(found))
 
-    amounts: List[float] = []
-    for amount_str, magnitude in _DOLLAR_RE.findall(text):
-        try:
-            val = float(amount_str.replace(",", ""))
-        except ValueError:
-            continue
-        mag = (magnitude or "").lower()
-        if mag == "billion":
-            val *= 1_000_000_000
-        elif mag == "million":
-            val *= 1_000_000
-        elif mag == "thousand":
-            val *= 1_000
-        if val >= 100_000:  # filter page numbers / trivial figures
-            amounts.append(val)
+    classification = classify_filing(text, hyperscalers)
+    amounts = _contextual_dollar_amounts(text)
 
-    m = re.search(
-        r"(material\s+definitive\s+agreement|purchase\s+order|"
-        r"supply\s+agreement|contract|agreement|award)",
-        text, re.IGNORECASE,
-    )
-    if m:
-        start = max(0, m.start() - 200)
-        end = min(len(text), m.start() + 600)
-        snippet = text[start:end].strip()
-    else:
-        snippet = text[:500].strip()
+    # Snippet: prefer the area around the agreement type / first strong term.
+    anchor_idx = -1
+    at = classification.get("agreement_type") or ""
+    if at:
+        anchor_idx = text.lower().find(at.lower())
+    if anchor_idx == -1:
+        for t in STRONG_POSITIVE_TERMS:
+            anchor_idx = text.lower().find(t)
+            if anchor_idx != -1:
+                break
+    if anchor_idx == -1:
+        anchor_idx = 0
+    snippet = text[max(0, anchor_idx - 150):anchor_idx + 550].strip()
 
     return {
-        "hyperscalers":  sorted(set(found)),
+        "hyperscalers":   hyperscalers,
         "dollar_amounts": amounts,
         "max_amount":     max(amounts) if amounts else 0,
         "snippet":        snippet[:600],
         "text_length":    len(text),
+        "classification": classification,
     }
