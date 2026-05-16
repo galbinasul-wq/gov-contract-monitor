@@ -150,3 +150,68 @@ def send_summary_email(subject: str, body: str) -> None:
         print("[alerts] Daily summary sent.")
     except Exception as e:
         print(f"[alerts] Summary send failed: {e}")
+
+
+# ---------- SEC 8-K alerts ----------
+
+def _format_sec_message(alert: dict) -> str:
+    badge = ("📜 MATERIAL AGREEMENT (Item 1.01)"
+             if alert.get("is_material_agreement")
+             else "📰 8-K DISCLOSURE")
+    hyperscalers = alert.get("hyperscalers") or []
+    hyper_str = ", ".join(hyperscalers) if hyperscalers else "(none detected)"
+    max_amount = alert.get("max_amount") or 0
+    amt_str = f"${max_amount:,.0f}" if max_amount else "(no amount detected in text)"
+    return (
+        f"SEC 8-K ALERT  {badge}\n"
+        f"  Company:            [{alert['ticker']}]  {alert['company']}\n"
+        f"  Filed:              {alert.get('filing_date','')}   "
+            f"(items: {alert.get('items','')})\n"
+        f"  Buyers detected:    {hyper_str}\n"
+        f"  Largest $ in text:  {amt_str}\n"
+        f"  Filing URL:         {alert.get('filing_url','')}\n"
+        f"  Excerpt:            {(alert.get('snippet') or '')[:420]}"
+    )
+
+
+def send_sec_console(alert: dict) -> None:
+    bar = "=" * 78
+    print("\n" + bar)
+    print(_format_sec_message(alert))
+    print(bar)
+
+
+def append_sec_log(alert: dict) -> None:
+    record = {**alert, "logged_at": datetime.now(timezone.utc).isoformat()}
+    with open("sec_alerts.jsonl", "a") as f:
+        f.write(json.dumps(record, default=str) + "\n")
+
+
+def send_sec_email(alert: dict) -> None:
+    if not (CONFIG.email_username and CONFIG.email_password and CONFIG.email_to):
+        return
+    try:
+        prefix = ("📜 [Material Agreement]"
+                  if alert.get("is_material_agreement")
+                  else "📰 [SEC 8-K]")
+        hyperscalers = alert.get("hyperscalers") or []
+        hyper_str = f" w/ {'/'.join(hyperscalers)}" if hyperscalers else ""
+        max_amount = alert.get("max_amount") or 0
+        amt_str = (f" ~${max_amount/1_000_000:.0f}M"
+                   if max_amount >= 1_000_000 else "")
+
+        msg = EmailMessage()
+        msg["Subject"] = (
+            f"{prefix} [{alert['ticker']}] {alert['company']}{hyper_str}{amt_str}"
+        )
+        msg["From"] = CONFIG.email_from or CONFIG.email_username
+        msg["To"] = CONFIG.email_to
+        body = _format_sec_message(alert) + "\n\n--\nSent by your SEC 8-K monitor."
+        msg.set_content(body)
+
+        with smtplib.SMTP(CONFIG.email_smtp_host, CONFIG.email_smtp_port, timeout=20) as s:
+            s.starttls()
+            s.login(CONFIG.email_username, CONFIG.email_password)
+            s.send_message(msg)
+    except Exception as e:
+        print(f"[alerts] SEC email send failed: {e}")
