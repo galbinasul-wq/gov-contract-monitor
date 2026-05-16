@@ -60,11 +60,12 @@ def evaluate_filing(
         return None
 
     signals = parse_filing_for_signals(text)
+    classification = signals.get("classification", {})
 
-    # 1.01 always alerts (it's specifically a material agreement).
-    # 7.01 / 8.01 only alert if a hyperscaler is named (otherwise noisy).
-    should_alert = is_material_agreement or bool(signals["hyperscalers"])
-    if not should_alert:
+    # The smart gate: only alert if the classifier judged this an actual
+    # customer/supply contract win (financing, M&A, leases, offerings are
+    # filtered out even though they're also filed under Item 1.01).
+    if not classification.get("is_contract"):
         return None
 
     return {
@@ -77,6 +78,9 @@ def evaluate_filing(
         "max_amount": signals["max_amount"],
         "dollar_amounts": signals["dollar_amounts"][:5],
         "snippet": signals["snippet"],
+        "confidence": classification.get("confidence", "Medium"),
+        "agreement_type": classification.get("agreement_type", ""),
+        "reason": classification.get("reason", ""),
         "accession_number": filing["accession_number"],
         "filing_url": filing_url(
             cik, filing["accession_number"], filing["primary_document"]
