@@ -41,5 +41,11 @@ class Config:
     usaspending_base_url: str = "https://api.usaspending.gov/api/v2"
     request_timeout_seconds: int = 30
 
+    # --- Form 4 insider-buying monitor ---
+    form4_lookback_days: int       = 14         # window for clustering buys
+    form4_min_cluster_insiders: int = 2          # >=N distinct insiders buying = cluster
+    form4_big_single_buy_usd: float = 500_000.0  # one buy this big alerts on its own
+    form4_min_buy_usd: float        = 25_000.0   # ignore token buys below this
+
 
 CONFIG = Config()
