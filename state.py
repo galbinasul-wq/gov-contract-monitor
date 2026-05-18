@@ -76,6 +76,32 @@ def _conn() -> sqlite3.Connection:
             alerts_fired    INTEGER NOT NULL
         )
     """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS form4_seen_filings (
+            accession_number TEXT PRIMARY KEY,
+            seen_at          TEXT NOT NULL
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS form4_alert_history (
+            signature        TEXT PRIMARY KEY,
+            fired_at         TEXT NOT NULL,
+            ticker           TEXT,
+            company          TEXT,
+            signal_type      TEXT,
+            insiders_count   INTEGER,
+            total_value      REAL,
+            detail           TEXT
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS form4_scan_log (
+            scan_at           TEXT PRIMARY KEY,
+            companies_scanned INTEGER NOT NULL,
+            filings_seen      INTEGER NOT NULL,
+            alerts_fired      INTEGER NOT NULL
+        )
+    """)
     return conn
 
 
@@ -233,6 +259,85 @@ def recent_sec_scans(hours: int = 24) -> List[Dict[str, Any]]:
         c.row_factory = sqlite3.Row
         cur = c.execute(
             "SELECT * FROM sec_scan_log WHERE scan_at >= ? ORDER BY scan_at DESC",
+            (cutoff,),
+        )
+        return [dict(r) for r in cur.fetchall()]
+
+
+# ---------- Form 4: dedup + alert history ----------
+
+def is_seen_form4(accession: str) -> bool:
+    with _conn() as c:
+        cur = c.execute(
+            "SELECT 1 FROM form4_seen_filings WHERE accession_number = ?", (accession,)
+        )
+        return cur.fetchone() is not None
+
+
+def mark_seen_form4(accession: str) -> None:
+    with _conn() as c:
+        c.execute(
+            "INSERT OR IGNORE INTO form4_seen_filings (accession_number, seen_at) VALUES (?, ?)",
+            (accession, datetime.now(timezone.utc).isoformat()),
+        )
+
+
+def form4_alert_already_fired(signature: str) -> bool:
+    with _conn() as c:
+        cur = c.execute(
+            "SELECT 1 FROM form4_alert_history WHERE signature = ?", (signature,)
+        )
+        return cur.fetchone() is not None
+
+
+def record_form4_alert(alert: Dict[str, Any]) -> None:
+    with _conn() as c:
+        c.execute(
+            """
+            INSERT OR REPLACE INTO form4_alert_history (
+                signature, fired_at, ticker, company, signal_type,
+                insiders_count, total_value, detail
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                alert.get("signature"),
+                datetime.now(timezone.utc).isoformat(),
+                alert.get("ticker"),
+                alert.get("company"),
+                alert.get("signal_type"),
+                alert.get("insiders_count"),
+                alert.get("total_value") or 0,
+                (alert.get("detail") or "")[:2000],
+            ),
+        )
+
+
+def recent_form4_alerts(hours: int = 24) -> List[Dict[str, Any]]:
+    cutoff = (datetime.now(timezone.utc) - timedelta(hours=hours)).isoformat()
+    with _conn() as c:
+        c.row_factory = sqlite3.Row
+        cur = c.execute(
+            "SELECT * FROM form4_alert_history WHERE fired_at >= ? ORDER BY total_value DESC",
+            (cutoff,),
+        )
+        return [dict(r) for r in cur.fetchall()]
+
+
+def record_form4_scan(companies: int, filings: int, alerts: int) -> None:
+    with _conn() as c:
+        c.execute(
+            "INSERT OR REPLACE INTO form4_scan_log "
+            "(scan_at, companies_scanned, filings_seen, alerts_fired) VALUES (?, ?, ?, ?)",
+            (datetime.now(timezone.utc).isoformat(), companies, filings, alerts),
+        )
+
+
+def recent_form4_scans(hours: int = 24) -> List[Dict[str, Any]]:
+    cutoff = (datetime.now(timezone.utc) - timedelta(hours=hours)).isoformat()
+    with _conn() as c:
+        c.row_factory = sqlite3.Row
+        cur = c.execute(
+            "SELECT * FROM form4_scan_log WHERE scan_at >= ? ORDER BY scan_at DESC",
             (cutoff,),
         )
         return [dict(r) for r in cur.fetchall()]
