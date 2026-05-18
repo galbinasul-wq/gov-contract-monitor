@@ -1,0 +1,62 @@
+name: Form 4 Insider Monitor
+
+# Polls SEC EDGAR for insider open-market buying clusters.
+# Shares the "monitor" concurrency group so it never commits the shared
+# state DB at the same time as the gov / SEC bots.
+
+on:
+  schedule:
+    - cron: '37 */6 * * *'  # every ~6 hours at :37 past
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: monitor
+  cancel-in-progress: false
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Check out repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run the Form 4 scan
+        env:
+          EMAIL_SMTP_HOST: smtp.gmail.com
+          EMAIL_SMTP_PORT: '587'
+          EMAIL_USERNAME: ${{ secrets.EMAIL_USERNAME }}
+          EMAIL_PASSWORD: ${{ secrets.EMAIL_PASSWORD }}
+          EMAIL_TO:       ${{ secrets.EMAIL_TO }}
+          SEC_USER_AGENT: ${{ secrets.SEC_USER_AGENT }}
+        run: python form4_monitor.py --once
+
+      - name: Commit updated state (if changed)
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git pull --rebase --autostash origin main || true
+          if [ -f monitor_state.db ]; then
+            git add monitor_state.db
+            if git diff --staged --quiet; then
+              echo "State file unchanged; nothing to commit."
+            else
+              git commit -m "state: form4 scan update ($(date -u '+%Y-%m-%d %H:%M UTC'))"
+              git push
+            fi
+          else
+            echo "No state file yet (no alerts fired this run). Nothing to commit."
+          fi
