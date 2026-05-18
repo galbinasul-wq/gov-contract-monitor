@@ -222,3 +222,61 @@ def send_sec_email(alert: dict) -> None:
             s.send_message(msg)
     except Exception as e:
         print(f"[alerts] SEC email send failed: {e}")
+
+
+# ---------- Form 4 insider-cluster alerts ----------
+
+def _format_form4_message(alert: dict) -> str:
+    return (
+        f"💰 INSIDER BUYING  [{alert['ticker']}]  {alert['company']}\n"
+        f"  Signal:        {alert.get('signal_type','')}\n"
+        f"  Insiders:      {alert.get('insiders_count',0)} distinct buyer(s)\n"
+        f"  Total bought:  ${alert.get('total_value',0):,.0f}  "
+            f"(largest single: ${alert.get('biggest_single',0):,.0f})\n"
+        f"  Who bought:\n{alert.get('detail','')}\n"
+        f"  All Form 4s:   {alert.get('filings_url','')}\n"
+        f"  Note: only open-market purchases (code P) counted; "
+            f"sales/grants/option exercises excluded."
+    )
+
+
+def send_form4_console(alert: dict) -> None:
+    bar = "=" * 78
+    print("\n" + bar)
+    print(_format_form4_message(alert))
+    print(bar)
+
+
+def append_form4_log(alert: dict) -> None:
+    record = {**alert, "logged_at": datetime.now(timezone.utc).isoformat()}
+    with open("form4_alerts.jsonl", "a") as f:
+        f.write(json.dumps(record, default=str) + "\n")
+
+
+def send_form4_email(alert: dict) -> None:
+    if not (CONFIG.email_username and CONFIG.email_password and CONFIG.email_to):
+        return
+    try:
+        total = alert.get("total_value", 0) or 0
+        amt_str = f" ${total/1_000_000:.1f}M" if total >= 1_000_000 else f" ${total:,.0f}"
+        msg = EmailMessage()
+        msg["Subject"] = (
+            f"💰 [Insider Buy] [{alert['ticker']}] {alert['company']} "
+            f"-- {alert.get('signal_type','')}{amt_str}"
+        )
+        msg["From"] = CONFIG.email_from or CONFIG.email_username
+        msg["To"] = CONFIG.email_to
+        body = _format_form4_message(alert) + "\n\n--\nSent by your Form 4 insider monitor."
+        msg.set_content(body)
+        with smtplib.SMTP(CONFIG.email_smtp_host, CONFIG.email_smtp_port, timeout=20) as s:
+            s.starttls()
+            s.login(CONFIG.email_username, CONFIG.email_password)
+            s.send_message(msg)
+    except Exception as e:
+        print(f"[alerts] Form 4 email send failed: {e}")
+
+
+def dispatch_form4(alert: dict) -> None:
+    send_form4_console(alert)
+    append_form4_log(alert)
+    send_form4_email(alert)
