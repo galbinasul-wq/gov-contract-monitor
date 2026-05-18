@@ -12,7 +12,11 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import List, Dict
 
-from state import recent_alerts, recent_scans, recent_sec_alerts, recent_sec_scans
+from state import (
+    recent_alerts, recent_scans,
+    recent_sec_alerts, recent_sec_scans,
+    recent_form4_alerts, recent_form4_scans,
+)
 from alerts import send_summary_email
 
 
@@ -113,6 +117,33 @@ def build_summary(hours: int = 24) -> tuple[str, str]:
             snip = (a.get("snippet") or "")[:160]
             lines.append(f"      Excerpt: {snip}")
             lines.append(f"      Filing:  {a.get('filing_url','')}")
+            lines.append("")
+
+    # ---- Form 4 insider-buying section ----
+    f4_alerts = recent_form4_alerts(hours=hours)
+    f4_scans = recent_form4_scans(hours=hours)
+    f4_scan_count = len(f4_scans)
+    f4_filings = sum(int(s.get("filings_seen") or 0) for s in f4_scans)
+
+    lines.append("")
+    lines.append("=" * 78)
+    lines.append("FORM 4 INSIDER-BUYING MONITOR (open-market purchases only)")
+    lines.append("=" * 78)
+    lines.append(f"Form 4 scans in last {hours}h:   {f4_scan_count}")
+    lines.append(f"Form 4 filings inspected:      {f4_filings}")
+    lines.append(f"Insider-buy alerts fired:      {len(f4_alerts)}")
+    lines.append("")
+    if not f4_alerts:
+        lines.append("No insider-buying clusters or large buys in this window.")
+    else:
+        for a in f4_alerts:
+            tv = float(a.get("total_value") or 0)
+            lines.append("-" * 78)
+            lines.append(
+                f"  💰 [{a.get('ticker','?')}] {a.get('company','?')}  "
+                f"-- {a.get('signal_type','')}  (${tv:,.0f} total)"
+            )
+            lines.append(a.get("detail", ""))
             lines.append("")
 
     body = "\n".join(lines)
