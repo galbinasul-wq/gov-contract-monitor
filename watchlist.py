@@ -605,4 +605,25 @@ WATCHLIST = [
      "match_terms": ["INTERCONTINENTAL EXCHANGE"], "include_when_large": True},
     {"ticker": "GD-EB","name": "GovDelivery / Granicus",
      "match_terms": ["GRANICUS"]},
+
+    # ============ ADDED: LAW ENFORCEMENT / DRONES ============
+    {"ticker": "AXON", "name": "Axon Enterprise",
+     "match_terms": ["AXON ENTERPRISE"], "include_when_large": True},
+    {"ticker": "RCAT", "name": "Red Cat Holdings",
+     "match_terms": ["RED CAT", "TELEDRONE", "SKYPERSONIC", "TEAL DRONES"]},
+
+    # ============ ADDED: QUANTUM COMPUTING ============
+    # These are small/speculative -- catalyst-driven (CHIPS Act, DoE, DoD).
+    # Note: CHIPS Act funds usually flow as grants/cooperative agreements,
+    # which the bot does NOT currently query (only contract codes A-D).
+    {"ticker": "QBTS", "name": "D-Wave Quantum",
+     "match_terms": ["D-WAVE", "D WAVE QUANTUM", "DWAVE QUANTUM"]},
+    {"ticker": "IONQ", "name": "IonQ",
+     "match_terms": ["IONQ"]},
+    {"ticker": "QUBT", "name": "Quantum Computing Inc",
+     "match_terms": ["QUANTUM COMPUTING INC", "QUANTUM COMPUTING, INC"]},
+    {"ticker": "RGTI", "name": "Rigetti Computing",
+     "match_terms": ["RIGETTI"]},
+    {"ticker": "QCOM", "name": "Qualcomm",
+     "match_terms": ["QUALCOMM"], "include_when_large": True},
 ]
