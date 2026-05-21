@@ -39,9 +39,9 @@ WATCHLIST = [
 
     # --- Small/mid-cap industrials & energy ---
     {"ticker": "MTRX", "name": "Matrix Service"},
-    {"ticker": "GLDD", "name": "Great Lakes Dredge & Dock"},
+    {"ticker": "GLDD", "name": "Great Lakes Dredge & Dock", "cik": "1372020"},
     {"ticker": "OII",  "name": "Oceaneering International"},
-    {"ticker": "CECE", "name": "CECO Environmental"},
+    {"ticker": "CECO", "name": "CECO Environmental", "cik": "3197"},
     {"ticker": "NPK",  "name": "National Presto Industries"},
     {"ticker": "LEU",  "name": "Centrus Energy"},
     {"ticker": "GEV",  "name": "GE Vernova"},
@@ -55,13 +55,13 @@ WATCHLIST = [
 
     # --- Financials / specialty ---
     {"ticker": "PLUS", "name": "ePlus Inc"},
-    {"ticker": "NVEE", "name": "NV5 Global"},
+    {"ticker": "NVEE", "name": "NV5 Global", "cik": "1532961"},
     {"ticker": "DGII", "name": "Digi International"},
     {"ticker": "MITK", "name": "Mitek Systems"},
     {"ticker": "RPD",  "name": "Rapid7"},
     {"ticker": "TENB", "name": "Tenable Holdings"},
     {"ticker": "VRNS", "name": "Varonis Systems"},
-    {"ticker": "ASGN", "name": "ASGN Incorporated"},
+    {"ticker": "ASGN", "name": "ASGN Incorporated", "cik": "890564"},
 
     # --- Larger names (rare but notable open-market buys) ---
     {"ticker": "PLTR", "name": "Palantir Technologies"},
