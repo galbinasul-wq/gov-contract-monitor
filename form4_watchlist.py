@@ -70,4 +70,16 @@ WATCHLIST = [
     {"ticker": "SAIC", "name": "Science Applications Intl"},
     {"ticker": "MMS",  "name": "Maximus"},
     {"ticker": "HII",  "name": "Huntington Ingalls"},
+
+    # --- Added: law enforcement / drones / quantum ---
+    # Insider open-market buying in speculative small-caps is especially
+    # high-signal -- there's only one reason an insider buys their own
+    # money-losing quantum stock on the open market.
+    {"ticker": "AXON", "name": "Axon Enterprise"},
+    {"ticker": "RCAT", "name": "Red Cat Holdings"},
+    {"ticker": "QBTS", "name": "D-Wave Quantum"},
+    {"ticker": "IONQ", "name": "IonQ"},
+    {"ticker": "QUBT", "name": "Quantum Computing Inc"},
+    {"ticker": "RGTI", "name": "Rigetti Computing"},
+    {"ticker": "QCOM", "name": "Qualcomm"},
 ]
