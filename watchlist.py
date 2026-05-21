@@ -238,7 +238,7 @@ WATCHLIST = [
     # ============ ENERGY / INDUSTRIAL / OTHER ============
     {"ticker": "OII",  "name": "Oceaneering International",
      "match_terms": ["OCEANEERING"]},
-    {"ticker": "CECE", "name": "CECO Environmental",
+    {"ticker": "CECO", "name": "CECO Environmental",
      "match_terms": ["CECO ENVIRONMENTAL"]},
     {"ticker": "MG",   "name": "Mistras Group",
      "match_terms": ["MISTRAS"]},
