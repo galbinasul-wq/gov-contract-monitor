@@ -1,8 +1,18 @@
 """Thin USAspending.gov API client.
 
-We hit /search/spending_by_award/ filtered to contracts only and use
-recipient_search_text to push as much filtering as possible to the server,
-since the unfiltered firehose is huge.
+We hit /search/spending_by_award/ filtered to a recipient list. The query
+covers BOTH procurement contracts (codes A-D) and federal financial
+assistance -- grants, cooperative agreements, and direct payments (codes
+02-11). This is important because programs like the CHIPS and Science Act
+fund companies via cooperative agreements (code 05), not procurement
+contracts, so a contracts-only filter would miss them entirely.
+
+Honest caveat: USAspending publishes contract obligations relatively
+quickly (days to ~2 weeks). Assistance/grant data is sometimes slower
+to publish (weeks to months, varies by agency). Don't expect a CHIPS
+Act award to appear here the day it's announced; it appears when the
+agency reports the obligation. Letters of intent never appear -- only
+actual obligations do.
 """
 from __future__ import annotations
 
@@ -13,8 +23,18 @@ from typing import Iterator, Dict, Any, List, Optional
 from config import CONFIG
 
 
-# A=BPA Call, B=Purchase Order, C=Delivery Order, D=Definitive Contract
-CONTRACT_AWARD_TYPES = ["A", "B", "C", "D"]
+# Procurement contract codes:
+#   A = BPA Call, B = Purchase Order, C = Delivery Order, D = Definitive Contract
+CONTRACT_CODES = ["A", "B", "C", "D"]
+# Federal financial assistance codes:
+#   02 = Block Grant            03 = Formula Grant
+#   04 = Project Grant          05 = Cooperative Agreement
+#   06 = Direct Payment for Specified Use
+#   10 = Direct Payment with Unrestricted Use
+#   11 = Other Financial Assistance
+ASSISTANCE_CODES = ["02", "03", "04", "05", "06", "10", "11"]
+
+AWARD_TYPE_CODES = CONTRACT_CODES + ASSISTANCE_CODES
 
 # Fields we ask the API to return for each award.
 # Note: 'Action Date' is NOT a valid field on this endpoint -- it's only
@@ -55,7 +75,7 @@ def fetch_recent_contracts(
     start = end - timedelta(days=days_back)
 
     filters: Dict[str, Any] = {
-        "award_type_codes": CONTRACT_AWARD_TYPES,
+        "award_type_codes": AWARD_TYPE_CODES,
         "time_period": [{
             "start_date": start.isoformat(),
             "end_date": end.isoformat(),
