@@ -127,7 +127,15 @@ def _query_one_type(
 
     while payload["page"] <= max_pages:
         r = requests.post(url, json=payload, timeout=CONFIG.request_timeout_seconds)
-        r.raise_for_status()
+        if not r.ok:
+            # Surface the actual API error so we can diagnose 4xx/5xx
+            # without redeploying. The API consistently returns a JSON
+            # body with the specific complaint (field name, value, etc).
+            body = (r.text or "")[:600].replace("\n", " ")
+            print(f"  [debug] HTTP {r.status_code} for codes={award_type_codes}, "
+                  f"sort={sort_field!r}")
+            print(f"  [debug] response body: {body}")
+            r.raise_for_status()
         data = r.json()
         for award in data.get("results", []):
             yield award
