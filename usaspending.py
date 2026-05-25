@@ -7,6 +7,17 @@ assistance -- grants, cooperative agreements, and direct payments (codes
 fund companies via cooperative agreements (code 05), not procurement
 contracts, so a contracts-only filter would miss them entirely.
 
+IMPORTANT: The /search/spending_by_award/ endpoint treats contracts and
+assistance as two different searches with DIFFERENT valid field sets per
+the API docs:
+https://github.com/fedspendingtransparency/usaspending-api/blob/master/
+  usaspending_api/api_contracts/contracts/v2/search/spending_by_award.md
+Mixing both code groups into a single request returns 500 Server Error.
+So we issue two separate queries per scan and merge the results (dedup
+on generated_internal_id). If one query fails (e.g. transient assistance
+endpoint outage), the other still produces results -- failure isolation
+is the whole reason we split rather than mix.
+
 Honest caveat: USAspending publishes contract obligations relatively
 quickly (days to ~2 weeks). Assistance/grant data is sometimes slower
 to publish (weeks to months, varies by agency). Don't expect a CHIPS
@@ -33,14 +44,12 @@ CONTRACT_CODES = ["A", "B", "C", "D"]
 #   10 = Direct Payment with Unrestricted Use
 #   11 = Other Financial Assistance
 ASSISTANCE_CODES = ["02", "03", "04", "05", "06", "10", "11"]
+AWARD_TYPE_CODES = CONTRACT_CODES + ASSISTANCE_CODES  # kept for external reference
 
-AWARD_TYPE_CODES = CONTRACT_CODES + ASSISTANCE_CODES
-
-# Fields we ask the API to return for each award.
-# Note: 'Action Date' is NOT a valid field on this endpoint -- it's only
-# usable as a date_type for time_period filtering. We use 'Base Obligation
-# Date' as the closest equivalent (when the base transaction was signed).
-_FIELDS = [
+# Base fields valid for BOTH contract and assistance searches.
+# Do NOT add type-specific fields here -- it triggers 500s on the
+# search that doesn't recognize the field.
+_BASE_FIELDS = [
     "Award ID",
     "generated_internal_id",
     "Recipient Name",
@@ -49,7 +58,6 @@ _FIELDS = [
     "Description",
     "Awarding Agency",
     "Awarding Sub Agency",
-    "Base Obligation Date",
     "Start Date",
     "End Date",
     "Last Modified Date",
@@ -60,22 +68,19 @@ def _today_utc() -> datetime:
     return datetime.now(timezone.utc)
 
 
-def fetch_recent_contracts(
-    days_back: int = 7,
-    min_amount: float = 0,
-    recipient_search_terms: Optional[List[str]] = None,
-    max_pages: int = 25,
+def _query_one_type(
+    award_type_codes: List[str],
+    days_back: int,
+    min_amount: float,
+    recipient_search_terms: Optional[List[str]],
+    max_pages: int,
 ) -> Iterator[Dict[str, Any]]:
-    """Yield contract awards with action_date in the past `days_back` days.
-
-    If `recipient_search_terms` is given, the API only returns awards whose
-    recipient name contains at least one of those substrings (server-side OR).
-    """
+    """Issue a single spending_by_award query for one award-type group."""
     end = _today_utc().date()
     start = end - timedelta(days=days_back)
 
     filters: Dict[str, Any] = {
-        "award_type_codes": AWARD_TYPE_CODES,
+        "award_type_codes": award_type_codes,
         "time_period": [{
             "start_date": start.isoformat(),
             "end_date": end.isoformat(),
@@ -89,7 +94,7 @@ def fetch_recent_contracts(
 
     payload = {
         "filters": filters,
-        "fields": _FIELDS,
+        "fields": _BASE_FIELDS,
         "sort": "Last Modified Date",
         "order": "desc",
         "limit": 100,
@@ -102,13 +107,51 @@ def fetch_recent_contracts(
         r = requests.post(url, json=payload, timeout=CONFIG.request_timeout_seconds)
         r.raise_for_status()
         data = r.json()
-
         for award in data.get("results", []):
             yield award
-
         if not data.get("page_metadata", {}).get("hasNext"):
             return
         payload["page"] += 1
+
+
+def fetch_recent_contracts(
+    days_back: int = 7,
+    min_amount: float = 0,
+    recipient_search_terms: Optional[List[str]] = None,
+    max_pages: int = 25,
+) -> Iterator[Dict[str, Any]]:
+    """Yield contract AND assistance awards with action_date in the past
+    `days_back` days. Issues two API queries (contracts, assistance) since
+    the endpoint requires them to be separate; merges + dedupes results.
+
+    If `recipient_search_terms` is given, the API only returns awards whose
+    recipient name contains at least one of those substrings (server-side OR).
+    """
+    seen: set = set()
+
+    def _emit(award_type: str, codes: List[str]):
+        try:
+            for award in _query_one_type(
+                award_type_codes=codes,
+                days_back=days_back,
+                min_amount=min_amount,
+                recipient_search_terms=recipient_search_terms,
+                max_pages=max_pages,
+            ):
+                key = award.get("generated_internal_id") or award.get("Award ID")
+                if not key or key in seen:
+                    continue
+                seen.add(key)
+                yield award
+        except requests.HTTPError as e:
+            # Failure isolation: one award-type failing must not kill the
+            # other. Log and continue rather than aborting the whole scan.
+            print(f"  [warn] {award_type} query failed: {e}")
+        except Exception as e:
+            print(f"  [warn] {award_type} query exception: {e}")
+
+    yield from _emit("contracts",  CONTRACT_CODES)
+    yield from _emit("assistance", ASSISTANCE_CODES)
 
 
 def chunked(items: List[str], size: int) -> Iterator[List[str]]:
