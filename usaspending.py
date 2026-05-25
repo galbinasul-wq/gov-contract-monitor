@@ -34,22 +34,27 @@ from typing import Iterator, Dict, Any, List, Optional
 from config import CONFIG
 
 
-# Procurement contract codes:
+# Procurement contract codes (one API group):
 #   A = BPA Call, B = Purchase Order, C = Delivery Order, D = Definitive Contract
 CONTRACT_CODES = ["A", "B", "C", "D"]
-# Federal financial assistance codes:
+# Grant-type assistance codes (one API group):
 #   02 = Block Grant            03 = Formula Grant
 #   04 = Project Grant          05 = Cooperative Agreement
-#   06 = Direct Payment for Specified Use
-#   10 = Direct Payment with Unrestricted Use
-#   11 = Other Financial Assistance
-ASSISTANCE_CODES = ["02", "03", "04", "05", "06", "10", "11"]
-AWARD_TYPE_CODES = CONTRACT_CODES + ASSISTANCE_CODES  # kept for external reference
+# CHIPS Act, NIH, NSF, DARPA, DoE R&D funding all flow through this group.
+# The USAspending /search/spending_by_award/ endpoint rejects any request
+# whose award_type_codes mix multiple groups (returns 422 with message:
+# "'award_type_codes' must only contain types from one group"), so each
+# group costs a separate query. Direct payments (06, 10) and "other"
+# (09, 11) are deliberately omitted -- they rarely apply to publicly
+# traded companies and would double the API load for marginal signal.
+GRANT_CODES = ["02", "03", "04", "05"]
+# Public alias kept for compatibility with anything that imports it.
+ASSISTANCE_CODES = GRANT_CODES
+AWARD_TYPE_CODES = CONTRACT_CODES + ASSISTANCE_CODES
 
 # Fields differ by award-type group. The spending_by_award endpoint
 # returns 422 if you request a contract-only field on an assistance
-# query (e.g. "Last Modified Date", "Description") or vice versa.
-# Keep these two lists narrow to what each query actually needs.
+# query or vice versa. Keep these lists narrow to what each query needs.
 
 _CONTRACT_FIELDS = [
     "Award ID",
@@ -66,12 +71,8 @@ _CONTRACT_FIELDS = [
 ]
 _CONTRACT_SORT = "Last Modified Date"
 
-# Conservative -- matches the assistance example in USAspending's own
-# intro tutorial. Notably excludes "Last Modified Date" and "Description"
-# which are not valid here. We lose the description text for assistance
-# alerts, but the transactions endpoint returns a description field that
-# downstream code already falls back to.
-_ASSISTANCE_FIELDS = [
+# Conservative -- matches the fields documented as valid for grants.
+_GRANT_FIELDS = [
     "Award ID",
     "generated_internal_id",
     "Recipient Name",
@@ -81,7 +82,14 @@ _ASSISTANCE_FIELDS = [
     "Start Date",
     "End Date",
 ]
-_ASSISTANCE_SORT = "Award Amount"
+_GRANT_SORT = "Award Amount"
+
+# Order of queries per scan. Add more (label, codes, fields, sort) tuples
+# here to extend coverage to additional API groups; nothing else changes.
+_QUERY_GROUPS = [
+    ("contracts", CONTRACT_CODES, _CONTRACT_FIELDS, _CONTRACT_SORT),
+    ("grants",    GRANT_CODES,    _GRANT_FIELDS,    _GRANT_SORT),
+]
 
 
 def _today_utc() -> datetime:
@@ -150,15 +158,22 @@ def fetch_recent_contracts(
     recipient_search_terms: Optional[List[str]] = None,
     max_pages: int = 25,
 ) -> Iterator[Dict[str, Any]]:
-    """Yield contract AND assistance awards with action_date in the past
-    `days_back` days. Issues two API queries (contracts, assistance) since
-    the endpoint requires them separate with different field sets; merges
-    and dedupes results.
+    """Yield contract AND grant awards with action_date in the past
+    `days_back` days. Issues one API query per group in _QUERY_GROUPS
+    (currently: contracts, grants); merges and dedupes results across
+    groups by generated_internal_id.
+
+    Failure isolation: if one group's query fails (transient API error,
+    rate limit, connection reset), the other groups still run and
+    produce results. The next scheduled scan picks up anything missed.
+
+    If `recipient_search_terms` is given, the API only returns awards
+    whose recipient name contains at least one of those substrings
+    (server-side OR).
     """
     seen: set = set()
 
-    def _emit(award_type: str, codes: List[str],
-              fields: List[str], sort_field: str):
+    for label, codes, fields, sort_field in _QUERY_GROUPS:
         try:
             for award in _query_one_type(
                 award_type_codes=codes,
@@ -175,16 +190,9 @@ def fetch_recent_contracts(
                 seen.add(key)
                 yield award
         except requests.HTTPError as e:
-            # Failure isolation: one award-type failing must not kill the
-            # other. Log and continue rather than aborting the whole scan.
-            print(f"  [warn] {award_type} query failed: {e}")
+            print(f"  [warn] {label} query failed: {e}")
         except Exception as e:
-            print(f"  [warn] {award_type} query exception: {e}")
-
-    yield from _emit("contracts",  CONTRACT_CODES,
-                     _CONTRACT_FIELDS,   _CONTRACT_SORT)
-    yield from _emit("assistance", ASSISTANCE_CODES,
-                     _ASSISTANCE_FIELDS, _ASSISTANCE_SORT)
+            print(f"  [warn] {label} query exception: {e}")
 
 
 def chunked(items: List[str], size: int) -> Iterator[List[str]]:
