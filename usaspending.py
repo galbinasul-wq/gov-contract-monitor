@@ -27,6 +27,7 @@ actual obligations do.
 """
 from __future__ import annotations
 
+import time
 import requests
 from datetime import datetime, timedelta, timezone
 from typing import Iterator, Dict, Any, List, Optional
@@ -96,6 +97,61 @@ def _today_utc() -> datetime:
     return datetime.now(timezone.utc)
 
 
+# --- Rate limiting + retry ----------------------------------------------------
+# USAspending sits behind AWS CloudFront, which rate-limits aggressively at the
+# edge. Empirically, bursting ~500 requests/minute from a single IP triggers
+# cascading connection resets and 500 HTML error pages (not JSON) returned by
+# the CDN, not the API. Pacing requests to ~5/sec keeps us comfortably under
+# the threshold. Module-level state so the limit applies across ALL callers
+# (contracts query, grants query, transactions query) in a single run.
+
+_MIN_REQUEST_INTERVAL_S = 0.2          # ~5 requests/second ceiling
+_RETRY_BACKOFFS_S       = [1.0, 3.0]   # backoff before retries 1 and 2
+_last_request_at        = [0.0]        # mutable singleton; time.monotonic()
+
+
+def _throttled_post(url: str, payload: dict) -> requests.Response:
+    """POST that paces requests across the module to avoid CDN throttling."""
+    delta = time.monotonic() - _last_request_at[0]
+    if delta < _MIN_REQUEST_INTERVAL_S:
+        time.sleep(_MIN_REQUEST_INTERVAL_S - delta)
+    try:
+        return requests.post(
+            url, json=payload, timeout=CONFIG.request_timeout_seconds
+        )
+    finally:
+        _last_request_at[0] = time.monotonic()
+
+
+def _post_with_retry(url: str, payload: dict,
+                     max_retries: int = 2) -> requests.Response:
+    """Throttled POST with retry on transient failures.
+
+    Retries on 5xx (CloudFront edge error / upstream flake) and on connection
+    errors (RemoteDisconnected, timeouts). Does NOT retry on 4xx -- those
+    indicate our payload is wrong and retrying will just waste API quota.
+    """
+    last_response: Optional[requests.Response] = None
+    for attempt in range(max_retries + 1):
+        try:
+            r = _throttled_post(url, payload)
+            last_response = r
+            # 2xx: success. 4xx: don't retry (payload is wrong, our fault).
+            if r.status_code < 500:
+                return r
+            # 5xx: retry if we have attempts left, else return the bad response.
+            if attempt == max_retries:
+                return r
+            time.sleep(_RETRY_BACKOFFS_S[attempt])
+        except (requests.exceptions.ConnectionError,
+                requests.exceptions.Timeout):
+            if attempt == max_retries:
+                raise
+            time.sleep(_RETRY_BACKOFFS_S[attempt])
+    # Unreachable: every path either returns or raises. Kept for type clarity.
+    return last_response  # type: ignore[return-value]
+
+
 def _query_one_type(
     award_type_codes: List[str],
     fields: List[str],
@@ -134,7 +190,7 @@ def _query_one_type(
     url = f"{CONFIG.usaspending_base_url}/search/spending_by_award/"
 
     while payload["page"] <= max_pages:
-        r = requests.post(url, json=payload, timeout=CONFIG.request_timeout_seconds)
+        r = _post_with_retry(url, payload)
         if not r.ok:
             # Surface the actual API error so we can diagnose 4xx/5xx
             # without redeploying. The API consistently returns a JSON
@@ -229,7 +285,7 @@ def fetch_transactions_for_award(
     transactions: List[Dict[str, Any]] = []
     while payload["page"] <= max_pages:
         try:
-            r = requests.post(url, json=payload, timeout=CONFIG.request_timeout_seconds)
+            r = _post_with_retry(url, payload)
             if not r.ok:
                 break
             data = r.json()
