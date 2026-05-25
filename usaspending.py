@@ -46,10 +46,12 @@ CONTRACT_CODES = ["A", "B", "C", "D"]
 ASSISTANCE_CODES = ["02", "03", "04", "05", "06", "10", "11"]
 AWARD_TYPE_CODES = CONTRACT_CODES + ASSISTANCE_CODES  # kept for external reference
 
-# Base fields valid for BOTH contract and assistance searches.
-# Do NOT add type-specific fields here -- it triggers 500s on the
-# search that doesn't recognize the field.
-_BASE_FIELDS = [
+# Fields differ by award-type group. The spending_by_award endpoint
+# returns 422 if you request a contract-only field on an assistance
+# query (e.g. "Last Modified Date", "Description") or vice versa.
+# Keep these two lists narrow to what each query actually needs.
+
+_CONTRACT_FIELDS = [
     "Award ID",
     "generated_internal_id",
     "Recipient Name",
@@ -62,6 +64,24 @@ _BASE_FIELDS = [
     "End Date",
     "Last Modified Date",
 ]
+_CONTRACT_SORT = "Last Modified Date"
+
+# Conservative -- matches the assistance example in USAspending's own
+# intro tutorial. Notably excludes "Last Modified Date" and "Description"
+# which are not valid here. We lose the description text for assistance
+# alerts, but the transactions endpoint returns a description field that
+# downstream code already falls back to.
+_ASSISTANCE_FIELDS = [
+    "Award ID",
+    "generated_internal_id",
+    "Recipient Name",
+    "Award Amount",
+    "Awarding Agency",
+    "Awarding Sub Agency",
+    "Start Date",
+    "End Date",
+]
+_ASSISTANCE_SORT = "Award Amount"
 
 
 def _today_utc() -> datetime:
@@ -70,6 +90,8 @@ def _today_utc() -> datetime:
 
 def _query_one_type(
     award_type_codes: List[str],
+    fields: List[str],
+    sort_field: str,
     days_back: int,
     min_amount: float,
     recipient_search_terms: Optional[List[str]],
@@ -94,8 +116,8 @@ def _query_one_type(
 
     payload = {
         "filters": filters,
-        "fields": _BASE_FIELDS,
-        "sort": "Last Modified Date",
+        "fields": fields,
+        "sort": sort_field,
         "order": "desc",
         "limit": 100,
         "page": 1,
@@ -122,17 +144,18 @@ def fetch_recent_contracts(
 ) -> Iterator[Dict[str, Any]]:
     """Yield contract AND assistance awards with action_date in the past
     `days_back` days. Issues two API queries (contracts, assistance) since
-    the endpoint requires them to be separate; merges + dedupes results.
-
-    If `recipient_search_terms` is given, the API only returns awards whose
-    recipient name contains at least one of those substrings (server-side OR).
+    the endpoint requires them separate with different field sets; merges
+    and dedupes results.
     """
     seen: set = set()
 
-    def _emit(award_type: str, codes: List[str]):
+    def _emit(award_type: str, codes: List[str],
+              fields: List[str], sort_field: str):
         try:
             for award in _query_one_type(
                 award_type_codes=codes,
+                fields=fields,
+                sort_field=sort_field,
                 days_back=days_back,
                 min_amount=min_amount,
                 recipient_search_terms=recipient_search_terms,
@@ -150,8 +173,10 @@ def fetch_recent_contracts(
         except Exception as e:
             print(f"  [warn] {award_type} query exception: {e}")
 
-    yield from _emit("contracts",  CONTRACT_CODES)
-    yield from _emit("assistance", ASSISTANCE_CODES)
+    yield from _emit("contracts",  CONTRACT_CODES,
+                     _CONTRACT_FIELDS,   _CONTRACT_SORT)
+    yield from _emit("assistance", ASSISTANCE_CODES,
+                     _ASSISTANCE_FIELDS, _ASSISTANCE_SORT)
 
 
 def chunked(items: List[str], size: int) -> Iterator[List[str]]:
