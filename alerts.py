@@ -280,3 +280,77 @@ def dispatch_form4(alert: dict) -> None:
     send_form4_console(alert)
     append_form4_log(alert)
     send_form4_email(alert)
+
+
+# ---------- DoD daily-contracts alerts ----------
+
+def _format_dod_message(alert: dict) -> str:
+    tier = alert.get("tier", "Regular")
+    tier_emoji = {"Big Impact": "🔴", "Important": "🟡", "Regular": "🟢"}.get(tier, "🟢")
+    amt = float(alert.get("amount") or 0)
+    mc = float(alert.get("market_cap") or 0)
+    ratio = float(alert.get("ratio_pct") or 0)
+    mc_str = f"${mc:,.0f}" if mc else "(market cap unavailable)"
+    return (
+        f"DoD DAILY CONTRACT  {tier_emoji} {tier.upper()}\n"
+        f"  Company:          [{alert['ticker']}]  {alert['company']}\n"
+        f"  Announced as:     {alert.get('contractor_as_announced','')}\n"
+        f"  Service:          {alert.get('service','UNKNOWN')}\n"
+        f"  Contract amount:  ${amt:,.0f}\n"
+        f"  Market cap:       {mc_str}\n"
+        f"  Material ratio:   {ratio:.2f}% of market cap\n"
+        f"  Contract ID:      {alert.get('contract_id') or '(none parsed)'}\n"
+        f"  Article URL:      {alert.get('article_url','')}\n"
+        f"  Source:           {alert.get('source','war.gov daily contracts')}\n"
+        f"  Excerpt:          {(alert.get('description') or '')[:400]}"
+    )
+
+
+def send_dod_console(alert: dict) -> None:
+    bar = "=" * 78
+    print("\n" + bar)
+    print(_format_dod_message(alert))
+    print(bar)
+
+
+def append_dod_log(alert: dict) -> None:
+    record = {**alert, "logged_at": datetime.now(timezone.utc).isoformat()}
+    with open("dod_alerts.jsonl", "a") as f:
+        f.write(json.dumps(record, default=str) + "\n")
+
+
+def send_dod_email(alert: dict) -> None:
+    if not (CONFIG.email_username and CONFIG.email_password and CONFIG.email_to):
+        return
+    try:
+        tier = alert.get("tier", "Regular")
+        tier_emoji = {"Big Impact": "🔴", "Important": "🟡", "Regular": "🟢"}.get(tier, "🟢")
+        amt = float(alert.get("amount") or 0)
+        amt_str = (f" ~${amt/1_000_000:.0f}M"
+                   if amt >= 1_000_000 else f" ${amt:,.0f}")
+
+        msg = EmailMessage()
+        msg["Subject"] = (
+            f"{tier_emoji} [DoD {tier}] [{alert['ticker']}] "
+            f"{alert['company']}{amt_str}"
+        )
+        msg["From"] = CONFIG.email_from or CONFIG.email_username
+        msg["To"] = CONFIG.email_to
+        body = (
+            _format_dod_message(alert)
+            + "\n\n--\nSent by your DoD daily-contracts monitor."
+            + "\nSource publishes same-day at 5pm ET; USAspending lags this by ~90 days for DoD."
+        )
+        msg.set_content(body)
+        with smtplib.SMTP(CONFIG.email_smtp_host, CONFIG.email_smtp_port, timeout=20) as s:
+            s.starttls()
+            s.login(CONFIG.email_username, CONFIG.email_password)
+            s.send_message(msg)
+    except Exception as e:
+        print(f"[alerts] DoD email send failed: {e}")
+
+
+def dispatch_dod(alert: dict) -> None:
+    send_dod_console(alert)
+    append_dod_log(alert)
+    send_dod_email(alert)
