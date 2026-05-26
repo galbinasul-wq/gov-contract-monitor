@@ -5,21 +5,27 @@ each business day at ~5pm ET. This is the FASTEST public source for
 DoD contract awards -- USAspending has a documented 90-day delay for
 DoD procurement data.
 
-We poll the RSS feed for the contract-roundup articles, then fetch each
-article and parse the individual contract entries from the page body.
+Architecture for the fetch:
+  1. Pull the daily-roundup index from war.gov's RSS endpoint (this
+     endpoint accepts automated requests freely).
+  2. For each article, TRY to fetch directly from war.gov first.
+  3. If the direct fetch fails (war.gov's CloudFront WAF actively
+     blocks scrapers from cloud-provider IP ranges), FALL BACK to
+     the Internet Archive's Wayback Machine, which caches war.gov
+     pages and is reachable from anywhere.
 
-War.gov's article pages sit behind CloudFront, which TLS-fingerprints
-the connecting client. Python's `requests` library has a distinctive
-JA3/JA4 fingerprint that CloudFront rejects with 403 even when the
-HTTP headers look browser-like. We use `curl_cffi` instead, which
-impersonates Chrome's complete TLS+HTTP/2 profile at the protocol
-level. The RSS endpoint accepts anything (designed for automation),
-so even without curl_cffi the RSS works -- only the article HTML
-fetches need the impersonation.
+Honest trade-off: the Wayback fallback path introduces a 1-3 day lag
+(sometimes more, sometimes less, depending on how recently archive.org
+crawled the target URL). We check the snapshot timestamp against the
+article's RSS pubDate and only accept snapshots taken AFTER the article
+was published, so we never parse stale content -- but we may legitimately
+have to skip articles for which no fresh-enough snapshot yet exists.
 
 Sources:
   https://www.war.gov/News/Contracts/
   https://www.war.gov/DesktopModules/ArticleCS/RSS.ashx?ContentType=400&Site=945
+  https://archive.org/wayback/available?url=...   (lookup)
+  https://web.archive.org/web/{TS}id_/{URL}       (raw content fetch)
 """
 from __future__ import annotations
 
@@ -27,22 +33,9 @@ import re
 import time
 import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
-from typing import Iterator, Dict, Any, List, Optional
+from email.utils import parsedate_to_datetime
+from typing import Iterator, Dict, Any, List, Optional, Tuple
 
-# Prefer curl_cffi for TLS-fingerprint impersonation. Fall back to plain
-# `requests` if it's not installed -- the bot still functions for the RSS
-# step, but article fetches will 403 from war.gov's WAF without it.
-try:
-    from curl_cffi import requests as _http_lib  # type: ignore[import]
-    _IMPERSONATE: Optional[str] = "chrome120"
-    _CURL_CFFI_AVAILABLE = True
-except ImportError:
-    import requests as _http_lib  # type: ignore[no-redef]
-    _IMPERSONATE = None
-    _CURL_CFFI_AVAILABLE = False
-
-# Plain requests is still used elsewhere in the repo and as the type for
-# the session attribute below. Import it under its own name too.
 import requests
 
 try:
@@ -54,9 +47,8 @@ except Exception:
 from config import CONFIG
 
 
-# Headers used when curl_cffi is NOT available (fallback). When curl_cffi
-# IS available, the impersonate profile provides its own browser-matched
-# headers and we don't override them.
+# Browser-realistic headers (used for the direct attempt; cheap to keep in
+# case war.gov ever stops blocking obvious automation).
 _HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -68,52 +60,19 @@ _HEADERS = {
         "image/avif,image/webp,*/*;q=0.8"
     ),
     "Accept-Language": "en-US,en;q=0.9",
-    "Accept-Encoding": "gzip, deflate, br",
     "Connection": "keep-alive",
-    "Upgrade-Insecure-Requests": "1",
-    "Sec-Fetch-Dest": "document",
-    "Sec-Fetch-Mode": "navigate",
-    "Sec-Fetch-Site": "none",
-    "Sec-Fetch-User": "?1",
 }
 
-# Module-level session: persists cookies and (when curl_cffi is in use)
-# reuses the impersonated TLS connection across fetches.
-_session: Any = None
-_session_warmed: bool = False
+# Module-level session for connection reuse on both war.gov and archive.org.
+_session: Optional[requests.Session] = None
 
 
-def _get_session():
+def _get_session() -> requests.Session:
     global _session
     if _session is None:
-        if _CURL_CFFI_AVAILABLE:
-            # curl_cffi.Session(impersonate=...) sets TLS profile + default
-            # browser headers. We don't override headers in this mode.
-            _session = _http_lib.Session(impersonate=_IMPERSONATE)
-        else:
-            _session = _http_lib.Session()
-            _session.headers.update(_HEADERS)
+        _session = requests.Session()
+        _session.headers.update(_HEADERS)
     return _session
-
-
-def _warmup_session() -> None:
-    """One GET to the contracts index page so the session picks up any
-    CloudFront WAF cookies the article pages require.
-
-    Failures here are non-fatal -- if the warmup itself 403s, individual
-    article fetches will surface the same error and we still log clearly.
-    """
-    global _session_warmed
-    if _session_warmed:
-        return
-    try:
-        _get_session().get(
-            "https://www.war.gov/News/Contracts/",
-            timeout=CONFIG.request_timeout_seconds,
-        )
-    except Exception as e:
-        print(f"  [warn] DoD session warmup failed (continuing): {e}")
-    _session_warmed = True
 
 _RSS_URL = (
     "https://www.war.gov/DesktopModules/ArticleCS/RSS.ashx"
@@ -265,18 +224,140 @@ def parse_dod_article(html_text: str, article_url: str) -> List[Dict[str, Any]]:
     return contracts
 
 
-def fetch_article_contracts(article_url: str) -> List[Dict[str, Any]]:
-    """Fetch and parse one daily-roundup article."""
-    _warmup_session()  # lazy, no-op after the first call per process
+# ---------- Wayback Machine fallback ----------------------------------------
+# When war.gov's WAF blocks our direct fetches (it currently does from
+# cloud-provider IPs), we look up the article in the Internet Archive's
+# Wayback Machine and fetch the most recent cached copy.
+
+_WAYBACK_AVAIL_URL = "https://archive.org/wayback/available"
+
+
+def _pubdate_to_wayback_ts(pubdate_str: str) -> Optional[str]:
+    """RFC822 pubDate ('Thu, 22 May 2026 21:00:00 GMT') -> 'YYYYMMDDhhmmss'."""
+    if not pubdate_str:
+        return None
+    try:
+        dt = parsedate_to_datetime(pubdate_str)
+        return dt.strftime("%Y%m%d%H%M%S")
+    except Exception:
+        return None
+
+
+def _fetch_wayback_snapshot(
+    article_url: str,
+    min_timestamp: Optional[str] = None,
+) -> Tuple[Optional[str], Optional[str]]:
+    """Find the most recent Wayback snapshot of `article_url` and return its
+    raw HTML content + the snapshot timestamp.
+
+    If `min_timestamp` (Wayback YYYYMMDDhhmmss) is provided, snapshots taken
+    BEFORE that time are rejected -- this prevents us from parsing a stale
+    capture from before the article was even published.
+
+    Returns (text, timestamp) on success, (None, None) on any failure.
+    """
+    # Use a plain requests session (NOT _get_session) so the browser-realistic
+    # headers used for war.gov don't leak into archive.org calls.
+    headers = {"User-Agent": "GovContractMonitor/1.0 (archive.org fallback)"}
+    try:
+        r = requests.get(
+            _WAYBACK_AVAIL_URL,
+            params={"url": article_url},
+            headers=headers,
+            timeout=CONFIG.request_timeout_seconds,
+        )
+        r.raise_for_status()
+        data = r.json()
+    except Exception as e:
+        print(f"  [warn] Wayback availability lookup failed: {e}")
+        return None, None
+
+    closest = (data.get("archived_snapshots") or {}).get("closest") or {}
+    if not closest.get("available"):
+        print(f"  [info] no Wayback snapshot exists for {article_url}")
+        return None, None
+
+    snap_ts = str(closest.get("timestamp", ""))
+    if min_timestamp and snap_ts and snap_ts < min_timestamp:
+        print(
+            f"  [info] Wayback snapshot {snap_ts} is older than article pub "
+            f"{min_timestamp}; skipping (would parse stale content)"
+        )
+        return None, None
+
+    # `id_` flag -> identity, returns original HTML as captured, no toolbar.
+    raw_url = f"https://web.archive.org/web/{snap_ts}id_/{article_url}"
+    try:
+        r = requests.get(
+            raw_url, headers=headers,
+            timeout=CONFIG.request_timeout_seconds,
+        )
+        if r.status_code != 200:
+            print(f"  [warn] Wayback raw fetch returned HTTP {r.status_code}")
+            return None, None
+        if len(r.text) < 1000:
+            print(f"  [warn] Wayback content suspiciously small ({len(r.text)} bytes); skipping")
+            return None, None
+        return r.text, snap_ts
+    except Exception as e:
+        print(f"  [warn] Wayback raw fetch failed: {e}")
+        return None, None
+
+
+# ---------- Public fetch (direct + fallback) --------------------------------
+
+def fetch_article_contracts(article: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Fetch and parse one daily-roundup article.
+
+    `article` is the dict returned by fetch_recent_daily_articles() with at
+    least 'url' and 'pubdate' keys. Tries war.gov directly, then falls back
+    to the Wayback Machine if direct fetch fails.
+    """
+    article_url = article.get("url", "")
+    pubdate = article.get("pubdate", "")
+    if not article_url:
+        return []
+
+    text: Optional[str] = None
+    source = "failed"
+
+    # --- Path 1: direct from war.gov ---
     try:
         r = _get_session().get(
             article_url, timeout=CONFIG.request_timeout_seconds
         )
-        r.raise_for_status()
+        if r.status_code == 200 and len(r.text) > 1000:
+            text = r.text
+            source = "direct"
+        else:
+            print(
+                f"  [info] direct fetch from war.gov returned "
+                f"HTTP {r.status_code} for {article_url}; trying Wayback"
+            )
     except Exception as e:
-        print(f"  [warn] article fetch failed {article_url}: {e}")
+        print(f"  [info] direct fetch from war.gov failed ({e}); trying Wayback")
+
+    # --- Path 2: Wayback Machine fallback ---
+    if text is None:
+        min_ts = _pubdate_to_wayback_ts(pubdate)
+        text, snap_ts = _fetch_wayback_snapshot(article_url, min_timestamp=min_ts)
+        if text and snap_ts:
+            source = f"wayback@{snap_ts}"
+
+    if text is None:
+        print(f"  [warn] article fetch failed (all paths) {article_url}")
         return []
-    return parse_dod_article(r.text, article_url)
+
+    contracts = parse_dod_article(text, article_url)
+    if contracts:
+        print(f"  [info] {article_url} -> {len(contracts)} contracts via {source}")
+        # Stamp the source onto each contract so the alert tells you whether
+        # it was same-day (direct) or N days delayed (wayback@timestamp).
+        for c in contracts:
+            c["fetch_source"] = source
+    else:
+        print(f"  [info] {article_url} -> 0 contracts parsed (via {source})")
+    return contracts
 
 
 # ---------- Matching against the gov watchlist ------------------------------
