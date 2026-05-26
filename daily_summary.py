@@ -16,6 +16,7 @@ from state import (
     recent_alerts, recent_scans,
     recent_sec_alerts, recent_sec_scans,
     recent_form4_alerts, recent_form4_scans,
+    recent_dod_alerts, recent_dod_scans,
 )
 from alerts import send_summary_email
 
@@ -145,6 +146,50 @@ def build_summary(hours: int = 24) -> tuple[str, str]:
             )
             lines.append(a.get("detail", ""))
             lines.append("")
+
+    # ---- DoD daily-contracts section ----
+    dod_alerts = recent_dod_alerts(hours=hours)
+    dod_scans = recent_dod_scans(hours=hours)
+    dod_scan_count = len(dod_scans)
+    dod_contracts = sum(int(s.get("contracts_seen") or 0) for s in dod_scans)
+
+    lines.append("")
+    lines.append("=" * 78)
+    lines.append("DoD DAILY CONTRACTS MONITOR (war.gov, same-day publication)")
+    lines.append("=" * 78)
+    lines.append(f"DoD scans in last {hours}h:        {dod_scan_count}")
+    lines.append(f"DoD contracts inspected:          {dod_contracts}")
+    lines.append(f"DoD watchlist-match alerts fired: {len(dod_alerts)}")
+    lines.append("")
+    if not dod_alerts:
+        lines.append("No DoD daily-contract alerts in this window.")
+        lines.append("(Most days, none of the listed $7.5M+ contracts go to a")
+        lines.append(" watchlist company. That's expected.)")
+    else:
+        # Group by tier so the high-impact stuff is at the top
+        by_tier: Dict[str, list] = {}
+        for a in dod_alerts:
+            by_tier.setdefault(a.get("tier") or "Regular", []).append(a)
+        for tier in ("Big Impact", "Important", "Regular"):
+            entries = by_tier.get(tier, [])
+            if not entries:
+                continue
+            emoji = {"Big Impact": "🔴", "Important": "🟡", "Regular": "🟢"}[tier]
+            lines.append("-" * 78)
+            lines.append(f"{emoji} {tier.upper()} ({len(entries)})")
+            lines.append("-" * 78)
+            for a in entries:
+                amt = float(a.get("amount") or 0)
+                ratio = float(a.get("ratio_pct") or 0)
+                lines.append(
+                    f"  [{a.get('ticker','?')}] {a.get('company','?')}  "
+                    f"${amt:,.0f}  ({ratio:.2f}% of mkt cap)"
+                )
+                lines.append(f"      Service: {a.get('service','-')}")
+                desc = (a.get("description") or "")[:200]
+                lines.append(f"      Desc:    {desc}")
+                lines.append(f"      Article: {a.get('article_url','')}")
+                lines.append("")
 
     body = "\n".join(lines)
     return subject, body
