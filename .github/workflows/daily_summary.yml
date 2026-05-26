@@ -29,6 +29,7 @@ jobs:
 
       - name: Build and send summary
         env:
+          PYTHONUNBUFFERED: '1'
           EMAIL_SMTP_HOST: smtp.gmail.com
           EMAIL_SMTP_PORT: '587'
           EMAIL_USERNAME: ${{ secrets.EMAIL_USERNAME }}
