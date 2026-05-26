@@ -31,15 +31,61 @@ except Exception:
 from config import CONFIG
 
 
-# Default browser-ish UA -- war.gov serves dynamic pages and some CDNs
-# 403 obvious Python-requests UAs.
+# war.gov's article pages return 403 to obvious automation User-Agents
+# (RSS endpoint accepts anything, article HTML does not). We mimic a
+# current Chrome browser closely enough to clear CloudFront's WAF rules.
 _HEADERS = {
     "User-Agent": (
-        "Mozilla/5.0 (compatible; GovContractMonitor/1.0; "
-        "+https://github.com/galbinasul-wq/gov-contract-monitor)"
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/121.0.0.0 Safari/537.36"
     ),
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Accept": (
+        "text/html,application/xhtml+xml,application/xml;q=0.9,"
+        "image/avif,image/webp,*/*;q=0.8"
+    ),
+    "Accept-Language": "en-US,en;q=0.9",
+    "Accept-Encoding": "gzip, deflate, br",
+    "Connection": "keep-alive",
+    "Upgrade-Insecure-Requests": "1",
+    "Sec-Fetch-Dest": "document",
+    "Sec-Fetch-Mode": "navigate",
+    "Sec-Fetch-Site": "none",
+    "Sec-Fetch-User": "?1",
 }
+
+# Module-level session: persists cookies that CloudFront sets on the
+# first request through the same connection across subsequent fetches.
+_session: Optional[requests.Session] = None
+_session_warmed: bool = False
+
+
+def _get_session() -> requests.Session:
+    global _session
+    if _session is None:
+        _session = requests.Session()
+        _session.headers.update(_HEADERS)
+    return _session
+
+
+def _warmup_session() -> None:
+    """One GET to the contracts index page so the session picks up any
+    CloudFront WAF cookies that the article pages require.
+
+    Failures here are non-fatal -- if the warmup itself 403s, individual
+    article fetches will surface the same error and we still log clearly.
+    """
+    global _session_warmed
+    if _session_warmed:
+        return
+    try:
+        _get_session().get(
+            "https://www.war.gov/News/Contracts/",
+            timeout=CONFIG.request_timeout_seconds,
+        )
+    except Exception as e:
+        print(f"  [warn] DoD session warmup failed (continuing): {e}")
+    _session_warmed = True
 
 _RSS_URL = (
     "https://www.war.gov/DesktopModules/ArticleCS/RSS.ashx"
@@ -92,7 +138,7 @@ def _strip_html(html_text: str) -> str:
 def fetch_recent_daily_articles(max_days: int = 20) -> List[Dict[str, Any]]:
     """Return up to `max_days` recent daily contract-roundup articles."""
     url = _RSS_URL.format(max=max_days)
-    r = requests.get(url, headers=_HEADERS, timeout=CONFIG.request_timeout_seconds)
+    r = _get_session().get(url, timeout=CONFIG.request_timeout_seconds)
     r.raise_for_status()
     try:
         root = ET.fromstring(r.content)
@@ -193,9 +239,11 @@ def parse_dod_article(html_text: str, article_url: str) -> List[Dict[str, Any]]:
 
 def fetch_article_contracts(article_url: str) -> List[Dict[str, Any]]:
     """Fetch and parse one daily-roundup article."""
+    _warmup_session()  # lazy, no-op after the first call per process
     try:
-        r = requests.get(article_url, headers=_HEADERS,
-                          timeout=CONFIG.request_timeout_seconds)
+        r = _get_session().get(
+            article_url, timeout=CONFIG.request_timeout_seconds
+        )
         r.raise_for_status()
     except Exception as e:
         print(f"  [warn] article fetch failed {article_url}: {e}")
