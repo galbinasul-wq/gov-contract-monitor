@@ -164,7 +164,12 @@ def _iter_matching_awards(days_back: int):
     and PARSONS CORPORATION) return overlapping results.
     """
     seen_in_scan = set()
-    for term in all_search_terms():
+    terms = list(all_search_terms())
+    total = len(terms)
+    print(f"  [progress] scanning {total} search terms...")
+    for i, term in enumerate(terms, start=1):
+        if i % 25 == 0 or i == total:
+            print(f"  [progress] {i}/{total} terms scanned, {len(seen_in_scan)} candidate awards so far")
         try:
             for award in fetch_recent_contracts(
                 days_back=days_back,
