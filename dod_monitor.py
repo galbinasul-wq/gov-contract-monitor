@@ -143,7 +143,7 @@ def run_once() -> None:
     for art in articles:
         url = art["url"]
         try:
-            entries = fetch_article_contracts(url)
+            entries = fetch_article_contracts(art)
         except Exception as e:
             print(f"  [warn] failed to parse {url}: {e}")
             continue
