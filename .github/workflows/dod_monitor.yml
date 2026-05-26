@@ -1,0 +1,68 @@
+name: DoD Daily Contracts Monitor
+
+# Polls war.gov for daily contract announcements. The DoD publishes its
+# daily list at ~5pm ET (21:00 UTC during EST, 22:00 UTC during EDT).
+# We run at 23:00 UTC -- comfortably after publication in both seasons --
+# and once again at 03:00 UTC the next morning as a safety net in case
+# the late-evening fetch missed (network blips, slow publication, etc).
+#
+# Shares the "monitor" concurrency group so it never commits the shared
+# state DB at the same time as the gov / SEC / Form 4 bots.
+
+on:
+  schedule:
+    - cron: '0 23 * * *'   # 23:00 UTC every day (post-publication)
+    - cron: '0  3 * * *'   # 03:00 UTC every day (safety re-poll)
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: monitor
+  cancel-in-progress: false
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Check out repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run the DoD daily-contracts scan
+        env:
+          PYTHONUNBUFFERED: '1'
+          EMAIL_SMTP_HOST: smtp.gmail.com
+          EMAIL_SMTP_PORT: '587'
+          EMAIL_USERNAME: ${{ secrets.EMAIL_USERNAME }}
+          EMAIL_PASSWORD: ${{ secrets.EMAIL_PASSWORD }}
+          EMAIL_TO:       ${{ secrets.EMAIL_TO }}
+        run: python dod_monitor.py --once
+
+      - name: Commit updated state (if changed)
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git pull --rebase --autostash origin main || true
+          if [ -f monitor_state.db ]; then
+            git add monitor_state.db
+            if git diff --staged --quiet; then
+              echo "State file unchanged; nothing to commit."
+            else
+              git commit -m "state: DoD daily-contracts scan ($(date -u '+%Y-%m-%d %H:%M UTC'))"
+              git push
+            fi
+          else
+            echo "No state file yet (no alerts fired this run). Nothing to commit."
+          fi
