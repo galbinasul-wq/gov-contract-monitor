@@ -8,6 +8,15 @@ DoD procurement data.
 We poll the RSS feed for the contract-roundup articles, then fetch each
 article and parse the individual contract entries from the page body.
 
+War.gov's article pages sit behind CloudFront, which TLS-fingerprints
+the connecting client. Python's `requests` library has a distinctive
+JA3/JA4 fingerprint that CloudFront rejects with 403 even when the
+HTTP headers look browser-like. We use `curl_cffi` instead, which
+impersonates Chrome's complete TLS+HTTP/2 profile at the protocol
+level. The RSS endpoint accepts anything (designed for automation),
+so even without curl_cffi the RSS works -- only the article HTML
+fetches need the impersonation.
+
 Sources:
   https://www.war.gov/News/Contracts/
   https://www.war.gov/DesktopModules/ArticleCS/RSS.ashx?ContentType=400&Site=945
@@ -20,6 +29,20 @@ import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
 from typing import Iterator, Dict, Any, List, Optional
 
+# Prefer curl_cffi for TLS-fingerprint impersonation. Fall back to plain
+# `requests` if it's not installed -- the bot still functions for the RSS
+# step, but article fetches will 403 from war.gov's WAF without it.
+try:
+    from curl_cffi import requests as _http_lib  # type: ignore[import]
+    _IMPERSONATE: Optional[str] = "chrome120"
+    _CURL_CFFI_AVAILABLE = True
+except ImportError:
+    import requests as _http_lib  # type: ignore[no-redef]
+    _IMPERSONATE = None
+    _CURL_CFFI_AVAILABLE = False
+
+# Plain requests is still used elsewhere in the repo and as the type for
+# the session attribute below. Import it under its own name too.
 import requests
 
 try:
@@ -31,9 +54,9 @@ except Exception:
 from config import CONFIG
 
 
-# war.gov's article pages return 403 to obvious automation User-Agents
-# (RSS endpoint accepts anything, article HTML does not). We mimic a
-# current Chrome browser closely enough to clear CloudFront's WAF rules.
+# Headers used when curl_cffi is NOT available (fallback). When curl_cffi
+# IS available, the impersonate profile provides its own browser-matched
+# headers and we don't override them.
 _HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -54,23 +77,28 @@ _HEADERS = {
     "Sec-Fetch-User": "?1",
 }
 
-# Module-level session: persists cookies that CloudFront sets on the
-# first request through the same connection across subsequent fetches.
-_session: Optional[requests.Session] = None
+# Module-level session: persists cookies and (when curl_cffi is in use)
+# reuses the impersonated TLS connection across fetches.
+_session: Any = None
 _session_warmed: bool = False
 
 
-def _get_session() -> requests.Session:
+def _get_session():
     global _session
     if _session is None:
-        _session = requests.Session()
-        _session.headers.update(_HEADERS)
+        if _CURL_CFFI_AVAILABLE:
+            # curl_cffi.Session(impersonate=...) sets TLS profile + default
+            # browser headers. We don't override headers in this mode.
+            _session = _http_lib.Session(impersonate=_IMPERSONATE)
+        else:
+            _session = _http_lib.Session()
+            _session.headers.update(_HEADERS)
     return _session
 
 
 def _warmup_session() -> None:
     """One GET to the contracts index page so the session picks up any
-    CloudFront WAF cookies that the article pages require.
+    CloudFront WAF cookies the article pages require.
 
     Failures here are non-fatal -- if the warmup itself 403s, individual
     article fetches will surface the same error and we still log clearly.
