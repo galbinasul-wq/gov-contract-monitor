@@ -102,6 +102,35 @@ def _conn() -> sqlite3.Connection:
             alerts_fired      INTEGER NOT NULL
         )
     """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS dod_seen_contracts (
+            signature TEXT PRIMARY KEY,
+            seen_at   TEXT NOT NULL
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS dod_alert_history (
+            signature   TEXT PRIMARY KEY,
+            fired_at    TEXT NOT NULL,
+            ticker      TEXT,
+            company     TEXT,
+            amount      REAL,
+            ratio_pct   REAL,
+            tier        TEXT,
+            service     TEXT,
+            contract_id TEXT,
+            article_url TEXT,
+            description TEXT
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS dod_scan_log (
+            scan_at        TEXT PRIMARY KEY,
+            articles       INTEGER NOT NULL,
+            contracts_seen INTEGER NOT NULL,
+            alerts_fired   INTEGER NOT NULL
+        )
+    """)
     return conn
 
 
@@ -338,6 +367,80 @@ def recent_form4_scans(hours: int = 24) -> List[Dict[str, Any]]:
         c.row_factory = sqlite3.Row
         cur = c.execute(
             "SELECT * FROM form4_scan_log WHERE scan_at >= ? ORDER BY scan_at DESC",
+            (cutoff,),
+        )
+        return [dict(r) for r in cur.fetchall()]
+
+
+# ---------- DoD: dedup + alert history + scan log ----------
+
+def is_seen_dod_contract(signature: str) -> bool:
+    with _conn() as c:
+        cur = c.execute(
+            "SELECT 1 FROM dod_seen_contracts WHERE signature = ?", (signature,)
+        )
+        return cur.fetchone() is not None
+
+
+def mark_seen_dod_contract(signature: str) -> None:
+    with _conn() as c:
+        c.execute(
+            "INSERT OR IGNORE INTO dod_seen_contracts (signature, seen_at) VALUES (?, ?)",
+            (signature, datetime.now(timezone.utc).isoformat()),
+        )
+
+
+def record_dod_alert(alert: Dict[str, Any], signature: str) -> None:
+    with _conn() as c:
+        c.execute(
+            """
+            INSERT OR REPLACE INTO dod_alert_history (
+                signature, fired_at, ticker, company, amount, ratio_pct,
+                tier, service, contract_id, article_url, description
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                signature,
+                datetime.now(timezone.utc).isoformat(),
+                alert.get("ticker"),
+                alert.get("company"),
+                float(alert.get("amount") or 0),
+                float(alert.get("ratio_pct") or 0),
+                alert.get("tier"),
+                alert.get("service"),
+                alert.get("contract_id"),
+                alert.get("article_url"),
+                (alert.get("description") or "")[:1500],
+            ),
+        )
+
+
+def recent_dod_alerts(hours: int = 24) -> List[Dict[str, Any]]:
+    cutoff = (datetime.now(timezone.utc) - timedelta(hours=hours)).isoformat()
+    with _conn() as c:
+        c.row_factory = sqlite3.Row
+        cur = c.execute(
+            "SELECT * FROM dod_alert_history WHERE fired_at >= ? ORDER BY amount DESC",
+            (cutoff,),
+        )
+        return [dict(r) for r in cur.fetchall()]
+
+
+def record_dod_scan(articles: int, contracts: int, alerts: int) -> None:
+    with _conn() as c:
+        c.execute(
+            "INSERT OR REPLACE INTO dod_scan_log "
+            "(scan_at, articles, contracts_seen, alerts_fired) VALUES (?, ?, ?, ?)",
+            (datetime.now(timezone.utc).isoformat(), articles, contracts, alerts),
+        )
+
+
+def recent_dod_scans(hours: int = 24) -> List[Dict[str, Any]]:
+    cutoff = (datetime.now(timezone.utc) - timedelta(hours=hours)).isoformat()
+    with _conn() as c:
+        c.row_factory = sqlite3.Row
+        cur = c.execute(
+            "SELECT * FROM dod_scan_log WHERE scan_at >= ? ORDER BY scan_at DESC",
             (cutoff,),
         )
         return [dict(r) for r in cur.fetchall()]
