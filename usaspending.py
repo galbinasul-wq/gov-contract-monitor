@@ -104,10 +104,27 @@ def _today_utc() -> datetime:
 # the CDN, not the API. Pacing requests to ~5/sec keeps us comfortably under
 # the threshold. Module-level state so the limit applies across ALL callers
 # (contracts query, grants query, transactions query) in a single run.
+#
+# We also reuse a single requests.Session() across the whole run so the
+# underlying TCP+TLS connection to CloudFront is kept alive between requests
+# instead of being torn down and rebuilt every time. This roughly halves the
+# per-request network overhead and looks much less like a burst attacker to
+# CloudFront's connection-counting heuristics (fewer RemoteDisconnected errors
+# in the middle of a long scan, where the burst budget has been spent and the
+# CDN starts being more aggressive about cycling new connections).
 
 _MIN_REQUEST_INTERVAL_S = 0.2          # ~5 requests/second ceiling
 _RETRY_BACKOFFS_S       = [1.0, 3.0]   # backoff before retries 1 and 2
 _last_request_at        = [0.0]        # mutable singleton; time.monotonic()
+_session: Optional[requests.Session] = None
+
+
+def _get_session() -> requests.Session:
+    """Lazy module-level Session. One TCP connection reused for all POSTs."""
+    global _session
+    if _session is None:
+        _session = requests.Session()
+    return _session
 
 
 def _throttled_post(url: str, payload: dict) -> requests.Response:
@@ -116,7 +133,7 @@ def _throttled_post(url: str, payload: dict) -> requests.Response:
     if delta < _MIN_REQUEST_INTERVAL_S:
         time.sleep(_MIN_REQUEST_INTERVAL_S - delta)
     try:
-        return requests.post(
+        return _get_session().post(
             url, json=payload, timeout=CONFIG.request_timeout_seconds
         )
     finally:
