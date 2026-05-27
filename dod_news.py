@@ -104,6 +104,40 @@ _DOLLAR_RE = re.compile(
 # Examples: (FA8820-24-D-B001), (N00189-26-D-L003), (W9128Z-26-D-A012)
 _CONTRACT_ID_RE = re.compile(r"\(([A-Z][A-Z0-9-]{6,})\)")
 
+# Optional override: some contract paragraphs end with "(Awarded on May 1,
+# 2026)." which is the real signing date when the announcement was batched
+# (typical for Foreign Military Sales).
+_AWARDED_ON_RE = re.compile(
+    r"Awarded\s+on\s+([A-Z][a-z]+\.?\s+\d{1,2},?\s*\d{4})",
+    re.IGNORECASE,
+)
+
+
+def _parse_month_day_year(s: str) -> Optional[str]:
+    """Parse 'May 1, 2026' or 'Apr. 30 2026' -> 'YYYY-MM-DD'. None on failure."""
+    if not s:
+        return None
+    s = s.strip().replace(".", "")
+    for fmt in ("%B %d, %Y", "%B %d %Y", "%b %d, %Y", "%b %d %Y"):
+        try:
+            return datetime.strptime(s, fmt).strftime("%Y-%m-%d")
+        except ValueError:
+            continue
+    return None
+
+
+def _format_pubdate(pubdate_str: str) -> str:
+    """RFC822 'Fri, 22 May 2026 21:00:00 GMT' -> '2026-05-22 (Fri)'.
+    Returns the input unchanged on parse failure so we always show *something*.
+    """
+    if not pubdate_str:
+        return ""
+    try:
+        dt = parsedate_to_datetime(pubdate_str)
+        return dt.strftime("%Y-%m-%d (%a)")
+    except Exception:
+        return pubdate_str
+
 
 def _strip_html(html_text: str) -> str:
     if _HAVE_BS4:
@@ -212,11 +246,16 @@ def parse_dod_article(html_text: str, article_url: str) -> List[Dict[str, Any]]:
         cid_matches = list(_CONTRACT_ID_RE.finditer(p))
         contract_id = cid_matches[-1].group(1) if cid_matches else ""
 
+        # Optional "Awarded on May 1, 2026" override (FMS / batched announcements)
+        award_match = _AWARDED_ON_RE.search(p)
+        award_date = _parse_month_day_year(award_match.group(1)) if award_match else ""
+
         contracts.append({
             "service": current_service,
             "contractor": contractor,
             "amount": amount,
             "contract_id": contract_id,
+            "award_date": award_date,
             "description": p[:1200],
             "article_url": article_url,
         })
@@ -349,12 +388,16 @@ def fetch_article_contracts(article: Dict[str, Any]) -> List[Dict[str, Any]]:
         return []
 
     contracts = parse_dod_article(text, article_url)
+    announce_date = _format_pubdate(pubdate)
     if contracts:
         print(f"  [info] {article_url} -> {len(contracts)} contracts via {source}")
-        # Stamp the source onto each contract so the alert tells you whether
-        # it was same-day (direct) or N days delayed (wayback@timestamp).
+        # Stamp the source AND the announcement date onto each contract.
+        # `announce_date` = day war.gov published the daily roundup.
+        # `award_date` (set in parse_dod_article) = override from "Awarded
+        # on DATE" tail when the announcement was batched (FMS, etc.).
         for c in contracts:
             c["fetch_source"] = source
+            c["announce_date"] = announce_date
     else:
         print(f"  [info] {article_url} -> 0 contracts parsed (via {source})")
     return contracts
