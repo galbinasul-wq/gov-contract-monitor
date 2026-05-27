@@ -165,8 +165,18 @@ def _iter_matching_awards(days_back: int):
     """
     seen_in_scan = set()
     terms = list(all_search_terms())
+    # Shuffle the iteration order each run. CloudFront's burst budget gets
+    # exhausted partway through any long scan, after which a chunk of the
+    # later requests hit transient failures. Without shuffling, the SAME
+    # companies in the middle of the watchlist would fail every single run
+    # (their term position always lands in the throttled window). Random
+    # ordering spreads that failure across the whole watchlist so every
+    # company gets cleanly scanned some hours of the day, and the 7-day
+    # lookback ensures we never lose a material signal entirely.
+    import random
+    random.shuffle(terms)
     total = len(terms)
-    print(f"  [progress] scanning {total} search terms...")
+    print(f"  [progress] scanning {total} search terms (randomized order)...")
     for i, term in enumerate(terms, start=1):
         if i % 25 == 0 or i == total:
             print(f"  [progress] {i}/{total} terms scanned, {len(seen_in_scan)} candidate awards so far")
