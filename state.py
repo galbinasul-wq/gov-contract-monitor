@@ -131,6 +131,18 @@ def _conn() -> sqlite3.Connection:
             alerts_fired   INTEGER NOT NULL
         )
     """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS bulk_download_log (
+            started_at       TEXT PRIMARY KEY,
+            ended_at         TEXT,
+            success          INTEGER NOT NULL,
+            file_name        TEXT,
+            zip_size_bytes   INTEGER,
+            rows_scanned     INTEGER,
+            rows_matched     INTEGER,
+            error_message    TEXT
+        )
+    """)
     return conn
 
 
@@ -441,6 +453,37 @@ def recent_dod_scans(hours: int = 24) -> List[Dict[str, Any]]:
         c.row_factory = sqlite3.Row
         cur = c.execute(
             "SELECT * FROM dod_scan_log WHERE scan_at >= ? ORDER BY scan_at DESC",
+            (cutoff,),
+        )
+        return [dict(r) for r in cur.fetchall()]
+
+
+# ---------- Bulk download diagnostics ----------
+
+def record_bulk_download(
+    started_at: str, ended_at: str, success: bool,
+    file_name: str = "", zip_size_bytes: int = 0,
+    rows_scanned: int = 0, rows_matched: int = 0,
+    error_message: str = "",
+) -> None:
+    """Log one bulk-download attempt so we can see timing/size trends over weeks."""
+    with _conn() as c:
+        c.execute(
+            "INSERT OR REPLACE INTO bulk_download_log "
+            "(started_at, ended_at, success, file_name, zip_size_bytes, "
+            " rows_scanned, rows_matched, error_message) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (started_at, ended_at, 1 if success else 0, file_name,
+             zip_size_bytes, rows_scanned, rows_matched, error_message),
+        )
+
+
+def recent_bulk_downloads(hours: int = 168) -> List[Dict[str, Any]]:
+    cutoff = (datetime.now(timezone.utc) - timedelta(hours=hours)).isoformat()
+    with _conn() as c:
+        c.row_factory = sqlite3.Row
+        cur = c.execute(
+            "SELECT * FROM bulk_download_log WHERE started_at >= ? ORDER BY started_at DESC",
             (cutoff,),
         )
         return [dict(r) for r in cur.fetchall()]
