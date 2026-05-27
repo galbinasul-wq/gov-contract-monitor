@@ -117,6 +117,8 @@ def evaluate_contract(
         "service": contract.get("service", "UNKNOWN"),
         "contractor_as_announced": contract.get("contractor", ""),
         "contract_id": contract.get("contract_id", ""),
+        "announce_date": contract.get("announce_date", ""),
+        "award_date": contract.get("award_date", ""),
         "description": contract.get("description", ""),
         "article_url": contract.get("article_url", ""),
         "source": "war.gov daily contracts",
