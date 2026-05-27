@@ -172,10 +172,10 @@ def wait_for_download(
             print(f"  [bulk] status -> '{status}' at {elapsed:.0f}s")
             last_logged_status = status
 
-        # USAspending's documented success/failure statuses are "finished"
-        # and "failed". We also accept some lenient synonyms just in case
-        # the API ever changes vocabulary.
-        if status in ("finished", "complete", "done", "ready"):
+        # USAspending's documented success status is "finished".
+        # "ready" is the INITIAL state (request accepted, not yet generated)
+        # so it must NOT be treated as success -- we keep polling.
+        if status == "finished":
             return data
         if status in ("failed", "error", "cancelled"):
             raise RuntimeError(
@@ -337,9 +337,18 @@ def fetch_recent_contracts_bulk(
     )
     status = wait_for_download(sub["file_name"])
 
-    file_url = status.get("file_url") or sub.get("download_url") or sub["raw"].get("url", "")
+    # The polling response should contain the canonical download URL once the
+    # ZIP is actually built. Fall back to the submit response's URL fields
+    # only as last resort -- those tend to be the *future* URL, not yet valid.
+    file_url = status.get("file_url") or status.get("url") or ""
+    url_source = "status.file_url" if status.get("file_url") else (
+        "status.url" if status.get("url") else "")
+    if not file_url:
+        file_url = sub.get("download_url") or sub["raw"].get("url", "")
+        url_source = "submit.url (fallback; may be premature)"
     if not file_url:
         raise RuntimeError("download finished but no file_url in status response")
+    print(f"  [bulk] download URL from {url_source}: {file_url[:90]}...")
 
     csv_paths = download_and_extract(file_url)
     if not csv_paths:
