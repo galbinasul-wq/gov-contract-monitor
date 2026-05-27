@@ -113,7 +113,7 @@ def _today_utc() -> datetime:
 # in the middle of a long scan, where the burst budget has been spent and the
 # CDN starts being more aggressive about cycling new connections).
 
-_MIN_REQUEST_INTERVAL_S = 0.2          # ~5 requests/second ceiling
+_MIN_REQUEST_INTERVAL_S = 0.5          # ~2 requests/second ceiling
 _RETRY_BACKOFFS_S       = [1.0, 3.0]   # backoff before retries 1 and 2
 _last_request_at        = [0.0]        # mutable singleton; time.monotonic()
 _session: Optional[requests.Session] = None
