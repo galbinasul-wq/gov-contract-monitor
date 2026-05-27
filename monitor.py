@@ -19,6 +19,7 @@ from typing import Optional, Dict, Any, List
 from config import CONFIG
 from watchlist import WATCHLIST
 from usaspending import fetch_recent_contracts, fetch_transactions_for_award, chunked
+from usaspending_bulk import fetch_recent_contracts_bulk
 from market_data import get_market_cap, cap_band
 from state import is_seen, mark_seen, record_alert, record_scan
 import alerts as alerts_mod
@@ -155,14 +156,51 @@ def evaluate_award(award: Dict[str, Any], days_back: int) -> List[Dict[str, Any]
 def _iter_matching_awards(days_back: int):
     """Stream awards that the API thinks match our watchlist names.
 
-    USAspending's `recipient_search_text` filter accepts only ONE term
-    per request (per their official docs), so we issue one request per
-    search term and yield results as we go.
+    Two implementations selectable via CONFIG.use_bulk_download:
 
-    We dedupe by award_id across the entire scan so the same contract
-    isn't yielded twice when multiple search terms (e.g. PARSONS GOVERNMENT
-    and PARSONS CORPORATION) return overlapping results.
+    BULK PATH (default, SaaS-ready):
+        Issues ONE bulk-download request per scan to /bulk_download/awards/.
+        USAspending generates a ZIP containing every federal award in the
+        window; we filter rows client-side against the watchlist. ~5-10
+        HTTP calls per scan instead of 860, no CloudFront rate-limit risk.
+
+    PER-COMPANY PATH (fallback, set use_bulk_download=False):
+        Issues one /search/spending_by_award request per watchlist term.
+        Used to be the only mode; kept as a safety net in case the bulk
+        endpoint is down for an extended period.
+
+    Both paths yield the same shape of transaction dict and dedup by
+    award_id within a single scan.
     """
+    if CONFIG.use_bulk_download:
+        yield from _iter_matching_awards_bulk(days_back)
+    else:
+        yield from _iter_matching_awards_per_company(days_back)
+
+
+def _iter_matching_awards_bulk(days_back: int):
+    """SaaS-ready path: one bulk download, client-side watchlist filter."""
+    terms = [t.upper() for t in all_search_terms()]
+    print(f"  [bulk] matching against {len(terms)} watchlist search terms")
+    seen_in_scan = set()
+    try:
+        for tx in fetch_recent_contracts_bulk(
+            days_back=days_back,
+            min_amount=CONFIG.min_contract_value,
+            watchlist_match_terms=terms,
+        ):
+            aid = tx.get("generated_internal_id") or tx.get("Award ID")
+            if not aid or aid in seen_in_scan:
+                continue
+            seen_in_scan.add(aid)
+            yield tx
+    except Exception as e:
+        print(f"  [error] bulk download failed: {e}")
+        print(f"  [info]  no candidates yielded this scan; next cron retries.")
+
+
+def _iter_matching_awards_per_company(days_back: int):
+    """Legacy path: one /search request per term. Kept as fallback."""
     seen_in_scan = set()
     terms = list(all_search_terms())
     # Shuffle the iteration order each run. CloudFront's burst budget gets
