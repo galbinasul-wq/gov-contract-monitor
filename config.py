@@ -41,6 +41,23 @@ class Config:
     usaspending_base_url: str = "https://api.usaspending.gov/api/v2"
     request_timeout_seconds: int = 30
 
+    # --- Bulk download mode (SaaS-ready architecture) ---
+    # When True, monitor.py issues ONE bulk-download request per scan instead
+    # of 860 per-company queries. The bulk endpoint returns a ZIP of CSVs
+    # containing every federal award in the window; we filter against the
+    # watchlist client-side. Eliminates the CloudFront rate-limit problem
+    # because we make ~5-10 HTTP calls per scan instead of 860.
+    use_bulk_download: bool = True
+
+    # Max time we'll wait for USAspending's backend to generate the ZIP.
+    # Empirically these complete in 30s-3min for a 7-day window. We poll
+    # every 10s and give up after this many seconds.
+    bulk_download_max_wait_seconds: int = 600   # 10 minutes
+
+    # Where to write the downloaded ZIP + extracted CSVs. Cleaned up at end
+    # of each scan; the GitHub Actions runner provides ~14GB free space.
+    bulk_download_work_dir: str = "/tmp/usaspending_bulk"
+
     # --- Form 4 insider-buying monitor ---
     form4_lookback_days: int       = 14         # window for clustering buys
     form4_min_cluster_insiders: int = 2          # >=N distinct insiders buying = cluster
