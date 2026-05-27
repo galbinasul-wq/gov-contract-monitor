@@ -291,11 +291,24 @@ def _format_dod_message(alert: dict) -> str:
     mc = float(alert.get("market_cap") or 0)
     ratio = float(alert.get("ratio_pct") or 0)
     mc_str = f"${mc:,.0f}" if mc else "(market cap unavailable)"
+
+    # Date lines: always show the announcement date (= day war.gov posted
+    # the daily roundup). Show the award date too when it's an explicit
+    # override from "Awarded on DATE" in the contract paragraph (this
+    # happens on batched FMS announcements where the real signing was
+    # earlier than the announcement).
+    announce_date = alert.get("announce_date") or "(date unknown)"
+    award_date = alert.get("award_date") or ""
+    date_lines = f"  Announced:        {announce_date}\n"
+    if award_date:
+        date_lines += f"  Awarded on:       {award_date}  (per contract text)\n"
+
     return (
         f"DoD DAILY CONTRACT  {tier_emoji} {tier.upper()}\n"
         f"  Company:          [{alert['ticker']}]  {alert['company']}\n"
         f"  Announced as:     {alert.get('contractor_as_announced','')}\n"
         f"  Service:          {alert.get('service','UNKNOWN')}\n"
+        f"{date_lines}"
         f"  Contract amount:  ${amt:,.0f}\n"
         f"  Market cap:       {mc_str}\n"
         f"  Material ratio:   {ratio:.2f}% of market cap\n"
